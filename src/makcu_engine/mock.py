@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from .errors import MakcuTimeoutError
+
 
 class MockTransport:
     def __init__(self, replies: dict[str, str] | None = None) -> None:
         self.replies = replies or {}
         self.sent: list[str] = []
+        self._stream: list[bytes] = []
+
+    def push_stream_frame(self, frame: bytes) -> None:
+        self._stream.append(frame)
 
     def _lookup(self, name: str, args: tuple[int | str, ...]) -> str:
         cmd = f"{name}({','.join(str(a) for a in args)})"
@@ -21,6 +27,8 @@ class MockTransport:
             "km.echo": "0",
             "km.moving": "0",
             "km.left": "0",
+            "km.autorelease": "0",
+            "km.api_version": "1",
             "km.getpos": "km.getpos(100,200)",
             "km.screen": "km.screen(1920,1080)",
         }.get(base, "")
@@ -33,3 +41,11 @@ class MockTransport:
 
     def fire_and_forget(self, name: str, *args: int | str) -> None:
         self.sent.append(f"{name}({','.join(str(a) for a in args)})")
+
+    def send_raw(self, data: bytes) -> None:
+        self.sent.append(data.decode("ascii"))
+
+    def read_line(self, timeout_s: float = 0.5) -> bytes:
+        if not self._stream:
+            raise MakcuTimeoutError("no stream frame")
+        return self._stream.pop(0)

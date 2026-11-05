@@ -1,14 +1,20 @@
 """MAKCU V4 mouse-only engine — public surface."""
 
 from .abc import Transport
+from .batch import BatchBuilder
 from .config import BAUDS, PROMPT, TIMEOUT_S, USB_PID, USB_VID
-from .errors import MakcuConnectionError, MakcuError, MakcuProtocolError, MakcuTimeoutError
+from .errors import (
+    MakcuConnectionError,
+    MakcuError,
+    MakcuProtocolError,
+    MakcuTimeoutError,
+)
 from .mock import MockTransport
 from .mouse import Mouse
 from .transport import MakcuTransport, list_candidates
 from .types import Button, ButtonOwnership, DeviceInfo, LockTarget, Position, Screen
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "BAUDS",
@@ -16,6 +22,7 @@ __all__ = [
     "TIMEOUT_S",
     "USB_PID",
     "USB_VID",
+    "BatchBuilder",
     "Button",
     "ButtonOwnership",
     "DeviceInfo",

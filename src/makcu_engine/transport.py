@@ -3,10 +3,15 @@
 Port and baud are never hardcoded in the flow: use :meth:`detect` to pick
 ``(port, baud)`` at runtime, then open explicitly. :meth:`auto` is the
 one-call shortcut (detect + connect).
+
+Concurrency contract: queries reset the input buffer, so do not run queries
+while a button stream is being polled. Streams and queries are mutually
+exclusive on one port.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import serial
@@ -16,12 +21,14 @@ from . import config
 from .errors import MakcuConnectionError, MakcuProtocolError, MakcuTimeoutError
 from .protocol import build_cmd, strip_prompt
 
+logger = logging.getLogger(__name__)
+
 
 def list_candidates() -> list[str]:
     """Order ports: CH343 VID/PID match first, other USB serial, then rest."""
     try:
         infos = list(serial.tools.list_ports.comports())
-    except Exception:
+    except OSError:
         return []
     scored: list[tuple[int, str]] = []
     for info in infos:
@@ -93,7 +100,7 @@ class MakcuTransport:
             finally:
                 self._ser = None
 
-    def __enter__(self) -> MakcuTransport:
+    def __enter__(self) -> MakcuTransport:  # noqa: PYI034
         if self._ser is None:
             self.connect()
         return self
@@ -148,30 +155,47 @@ class MakcuTransport:
     def _exchange(self, payload: bytes) -> bytes:
         if self._ser is None:
             raise MakcuConnectionError("transport not connected")
+        logger.debug("TX %r", payload)
         with self._lock:
             self._ser.reset_input_buffer()
             self._ser.write(payload)
             self._ser.flush()
-            raw = self._ser.read_until(config.PROMPT)
+            raw: bytes = self._ser.read_until(config.PROMPT)
+        logger.debug("RX %r", raw)
         if not raw:
             raise MakcuTimeoutError("no reply (prompt >>> missing)")
         if config.PROMPT not in raw:
             raise MakcuProtocolError(f"truncated reply: {raw!r}")
         return raw
 
-    def query(self, name: str, *args: int | str) -> str:
-        raw = self._exchange(build_cmd(name, *args))
+    def query(self, name: str, *args: int | str, retries: int = 1) -> str:
+        last: MakcuTimeoutError = MakcuTimeoutError("no reply")
+        for _ in range(max(retries, 0) + 1):
+            try:
+                raw = self._exchange(build_cmd(name, *args))
+                break
+            except MakcuTimeoutError as e:
+                last = e
+                logger.debug("query %s timeout, retrying", name)
+                continue
+        else:
+            raise last
         try:
             return strip_prompt(raw)
         except ValueError as e:
             raise MakcuProtocolError(str(e)) from e
 
     def set(self, name: str, *args: int | str, error_window_s: float = 0.08) -> None:
+        self.send_raw(build_cmd(name, *args), error_window_s)
+
+    def send_raw(self, data: bytes, error_window_s: float = 0.08) -> None:
+        """Write pre-framed bytes; single ERR-window read. Used by Batch."""
         if self._ser is None:
             raise MakcuConnectionError("transport not connected")
+        logger.debug("TX %r", data)
         with self._lock:
             self._ser.reset_input_buffer()
-            self._ser.write(build_cmd(name, *args))
+            self._ser.write(data)
             self._ser.flush()
             prev = self._ser.timeout
             try:
@@ -179,8 +203,44 @@ class MakcuTransport:
                 raw = self._ser.read_until(config.PROMPT)
             finally:
                 self._ser.timeout = prev
+        logger.debug("RX %r", raw)
         if b"ERR" in raw:
-            raise MakcuProtocolError(f"{name} rejected: {raw!r}")
+            raise MakcuProtocolError(f"rejected: {raw!r}")
+
+    def read_line(self, timeout_s: float = 0.5) -> bytes:
+        """Read one CRLF-terminated frame without touching the buffer.
+
+        For stream polling only — never call while a query is in flight.
+        """
+        if self._ser is None:
+            raise MakcuConnectionError("transport not connected")
+        with self._lock:
+            prev = self._ser.timeout
+            try:
+                self._ser.timeout = timeout_s
+                raw: bytes = self._ser.read_until(b"\r\n")
+            finally:
+                self._ser.timeout = prev
+        logger.debug("STREAM %r", raw)
+        if not raw:
+            raise MakcuTimeoutError("no stream frame")
+        return raw
+
+    def reconnect(self) -> None:
+        import time as _time
+
+        self.close()
+        _time.sleep(0.3)
+        self.connect()
+
+    def ensure_connected(self) -> None:
+        try:
+            self.query("km.echo")
+            return
+        except MakcuConnectionError:
+            pass
+        self.reconnect()
+        self.query("km.echo")
 
     def fire_and_forget(self, name: str, *args: int | str) -> None:
         if self._ser is None:

@@ -33,3 +33,18 @@ def test_clamp_and_buttons():
         pass
     assert protocol.button_method(Button.LEFT) == "left"
     assert protocol.mask_method(Button.RIGHT) == "right_mask"
+
+
+def test_button_aliases():
+    assert Button.MS1 is Button.SIDE1
+    assert Button.MS2 is Button.SIDE2
+    assert protocol.button_method(Button.MS1) == "side1"
+
+
+def test_button_event():
+    assert protocol.parse_button_event(b"km.\x03\r\n") == 0x03
+    try:
+        protocol.parse_button_event(b"garbage\r\n")
+        raise AssertionError("should raise")
+    except ValueError:
+        pass

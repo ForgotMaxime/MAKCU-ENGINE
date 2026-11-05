@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from .abc import Transport
+from .batch import BatchBuilder
 from .protocol import (
     button_method,
     clamp_i16,
     mask_method,
+    parse_button_event,
     parse_device,
     parse_getpos,
     parse_screen,
@@ -109,3 +111,33 @@ class Mouse:
 
     def move_ff(self, dx: int, dy: int) -> None:
         self._t.fire_and_forget("km.move", clamp_i16(dx), clamp_i16(dy))
+
+    def batch(self) -> BatchBuilder:
+        return BatchBuilder(self._t)
+
+    # --- test-build features (V4.103+, absent from older firmware: ERR) ---
+    def autorelease(self) -> int:
+        return int(self._t.query("km.autorelease"))
+
+    def set_autorelease(self, timeout_ms: int) -> None:
+        if not 0 <= timeout_ms <= 60000:
+            raise ValueError(f"autorelease out of range: {timeout_ms}")
+        self._t.set("km.autorelease", timeout_ms)
+
+    def heartbeat(self) -> None:
+        self._t.set("km.heartbeat")
+
+    def api_version(self) -> int:
+        return int(self._t.query("km.api_version"))
+
+    # --- button stream (no queries in flight while polling) ---
+    def start_button_stream(self, mode: int = 1) -> None:
+        if mode not in (1, 2, 3):
+            raise ValueError(f"stream mode out of range: {mode}")
+        self._t.set("km.buttons", mode)
+
+    def stop_button_stream(self) -> None:
+        self._t.set("km.buttons", 0)
+
+    def poll_button_event(self, timeout_s: float = 0.5) -> int:
+        return parse_button_event(self._t.read_line(timeout_s))

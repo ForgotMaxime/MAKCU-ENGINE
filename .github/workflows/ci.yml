@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyserial pytest ruff mypy
+      - run: python -m pytest tests/ -v
+      - run: ruff check src tests examples
+      - run: mypy src
+
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo test --workspace --manifest-path rust/Cargo.toml
+      - run: cargo clippy --workspace --manifest-path rust/Cargo.toml -- -D warnings
+      - run: cargo fmt --check --manifest-path rust/Cargo.toml

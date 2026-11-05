@@ -60,3 +60,10 @@ def button_method(button: Button) -> str:
 
 def mask_method(button: Button) -> str:
     return f"{button_method(button)}_mask"
+
+
+def parse_button_event(raw: bytes) -> int:
+    """Parse one V4.036+ prefixed stream frame: b'km.' + mask + CRLF."""
+    if len(raw) == 6 and raw[:3] == b"km." and raw.endswith(b"\r\n"):
+        return raw[3]
+    raise ValueError(f"bad button frame: {raw!r}")

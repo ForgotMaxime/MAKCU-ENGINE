@@ -10,6 +10,10 @@ class Button(IntEnum):
     MIDDLE = 3
     SIDE1 = 4
     SIDE2 = 5
+    # V4 aliases: km.ms1/ms2 address the same side buttons (lock targets
+    # are named ml/mm/mr/ms1/ms2). Same values, canonical names stay SIDE*.
+    MS1 = 4
+    MS2 = 5
 
 
 class ButtonOwnership(IntEnum):

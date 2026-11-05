@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::time::Duration;
 
-use crate::{Result, Transport};
+use crate::{MakcuError, Result, Transport};
 
 pub struct MockTransport {
     replies: HashMap<String, String>,
     sent: Mutex<Vec<String>>,
+    stream: Mutex<VecDeque<Vec<u8>>>,
 }
 
 impl MockTransport {
@@ -13,11 +16,16 @@ impl MockTransport {
         Self {
             replies: HashMap::new(),
             sent: Mutex::new(Vec::new()),
+            stream: Mutex::new(VecDeque::new()),
         }
     }
 
     pub fn sent(&self) -> Vec<String> {
         self.sent.lock().unwrap().clone()
+    }
+
+    pub fn push_stream_frame(&self, frame: &[u8]) {
+        self.stream.lock().unwrap().push_back(frame.to_vec());
     }
 }
 
@@ -45,6 +53,8 @@ impl Transport for MockTransport {
             "km.echo" => "0",
             "km.moving" => "0",
             "km.left" => "0",
+            "km.autorelease" => "0",
+            "km.api_version" => "1",
             "km.getpos" => "km.getpos(100,200)",
             "km.screen" => "km.screen(1920,1080)",
             _ => "",
@@ -60,5 +70,21 @@ impl Transport for MockTransport {
     fn fire_and_forget(&self, name: &str, args: &[&str]) -> Result<()> {
         self.sent.lock().unwrap().push(fmt_cmd(name, args));
         Ok(())
+    }
+
+    fn send_raw(&self, data: &[u8]) -> Result<()> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push(String::from_utf8_lossy(data).into_owned());
+        Ok(())
+    }
+
+    fn read_line(&self, _timeout: Duration) -> Result<Vec<u8>> {
+        self.stream
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or(MakcuError::Timeout)
     }
 }

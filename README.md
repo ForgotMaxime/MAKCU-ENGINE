@@ -30,6 +30,7 @@ CB/
     transport.py           # serial Transport impl (thread-safe, exclusive)
     mouse.py               # Mouse<T: Transport> — validation + command mapping
     mock.py                # in-memory Transport for unit tests
+    batch.py               # BatchBuilder — coalesced single-write setter batches
     config.py / errors.py
   tests/
     test_protocol.py       # pure, no hardware
@@ -102,7 +103,27 @@ candidates = list_candidates()                # ordered port names
 with MakcuTransport(port, baud) as transport: ...
 ```
 
-API surface (`Mouse`): `version/device/echo/set_echo/getpos/screen/moving/button_state/lock_state/move/move_now/moveto/set_screen/wheel/silent/down/up/click/set_move_mask/set_wheel_mask/set_button_mask/set_lock/move_ff`.
+API surface (`Mouse`): `version/device/echo/set_echo/getpos/screen/moving/button_state/lock_state/move/move_now/moveto/set_screen/wheel/silent/down/up/click/set_move_mask/set_wheel_mask/set_button_mask/set_lock/move_ff/batch/autorelease/set_autorelease/heartbeat/api_version/start_button_stream/stop_button_stream/poll_button_event`.
+
+Transport: `detect()` → `(port, baud)`, `auto()` (detect + connect), `open(port, baud)`, `probe(port)`, `reconnect()`, `ensure_connected()`, `send_raw()`, `read_line()`. Queries retry once on timeout; setters use a single 80 ms ERR window. Debug logging via `logging.getLogger("makcu_engine")`.
+
+Batching (one write, one ERR window):
+
+```python
+with MakcuTransport.auto() as t:
+    n = Mouse(t).batch().move(2, 0).move(-2, 0).wheel(0).execute()
+```
+
+Button stream (no queries in flight while polling):
+
+```python
+mouse.start_button_stream(1)
+mask = mouse.poll_button_event(0.5)  # bitmask int
+mouse.stop_button_stream()
+```
+
+Measured on `COM4 @ 4M` (`examples/benchmark.py`): query ~0.21 ms avg, 100×
+fire-and-forget ~6.6 ms total, batch×3 ~94 ms (1 ERR window per batch vs 1 per setter).
 
 Error model: `MakcuError` → `MakcuConnectionError | MakcuTimeoutError | MakcuProtocolError`. Argument validation raises `ValueError`.
 
@@ -133,8 +154,8 @@ Lower level: `MakcuTransport::list_candidates()` (CH343 VID/PID first), `MakcuTr
 
 Crates:
 
-- `makcu_core` — zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`), `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types`. 6 unit tests.
-- `makcu_serial` — `Transport for MakcuTransport` over `serialport`. Interior mutability via `Mutex`, `read_until(PROMPT)` with deadline loop.
+- `makcu_core` — zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`), `BatchBuilder`, `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types`. 10 unit tests.
+- `makcu_serial` — `Transport for MakcuTransport` over `serialport`. Interior mutability via `Mutex`, `read_until` with deadline loop, open retry with backoff.
 
 ## Hardware Validation
 
@@ -143,8 +164,11 @@ Crates:
 | `detect()` (VID/PID-ordered scan + probe) | `test_integration` | `check_mouse` | `COM4 @ 4000000` |
 | `version/device/echo/screen/getpos/moving` | pass | pass | `km.MAKCU`, `MK/8uf`, `1920x1080` |
 | `move(+2,0)+move(-2,0)` net-zero | pass | pass | position unchanged |
-| Unit (framing, parsing, clamp, mock flow) | 7 passed | 6 passed | — |
-| Lints | `ruff/mypy` config | `clippy -D warnings`, `fmt` | clean |
+| batch×3 / autorelease roundtrip | pass | mock-only | firmware answers `autorelease` |
+| Unit (framing, parsing, clamp, mock flow, batch, stream) | 11 passed* | 10 passed | — |
+| Lints | `ruff + mypy --strict` | `clippy -D warnings`, `fmt` | clean |
+
+\* 14 with the 3 hardware-gated integration tests.
 
 Integration tests never click, never scroll, and never change persistent settings. Only `COM4` is touched; `COM3` (virtual, not ready) and `COM5/COM6` (ESP32-S3, `Unknown`) are left alone.
 
@@ -153,7 +177,7 @@ Integration tests never click, never scroll, and never change persistent setting
 | Python | Rust | Note |
 |---|---|---|
 | `Mouse.move(dx, dy)` | `Mouse::move_rel(dx, dy)` | `move` is a keyword in Rust |
-| `abc.Transport` (Protocol) | `makcu_core::Transport` (trait) | same three methods: `query/set/fire_and_forget` |
+| `abc.Transport` (Protocol) | `makcu_core::Transport` (trait) | `query/set/fire_and_forget/send_raw/read_line` |
 | `MockTransport` | `makcu_core::MockTransport` | same canned replies, `sent()` log |
 | `errors.ConnectionError` shadowing builtin | `MakcuConnectionError` etc. | prefixed to avoid shadowing `std` |
 | `config.PROMPT = b">>> "` | `makcu_serial::PROMPT` | single prompt constant, no duplication |

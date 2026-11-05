@@ -158,14 +158,21 @@ fn read_until(
 
 impl Transport for MakcuTransport {
     fn query(&self, name: &str, args: &[&str]) -> Result<String> {
-        let raw = self.exchange_query(&build_cmd(name, args))?;
+        let raw = match self.exchange_query(&build_cmd(name, args)) {
+            Err(MakcuError::Timeout) => self.exchange_query(&build_cmd(name, args))?,
+            other => other?,
+        };
         makcu_core::protocol::strip_prompt(&raw)
     }
 
     fn set(&self, name: &str, args: &[&str]) -> Result<()> {
+        self.send_raw(&build_cmd(name, args))
+    }
+
+    fn send_raw(&self, data: &[u8]) -> Result<()> {
         let mut port = self.inner.lock().unwrap();
         let _ = port.clear(serialport::ClearBuffer::Input);
-        port.write_all(&build_cmd(name, args))
+        port.write_all(data)
             .map_err(|e| MakcuError::Connection(e.to_string()))?;
         port.flush()
             .map_err(|e| MakcuError::Connection(e.to_string()))?;
@@ -173,9 +180,18 @@ impl Transport for MakcuTransport {
         let mut port = self.inner.lock().unwrap();
         let raw = read_until(&mut **port, PROMPT, ERROR_WINDOW)?;
         if contains(&raw, b"ERR") {
-            return Err(MakcuError::Protocol(format!("{name} rejected: {raw:?}")));
+            return Err(MakcuError::Protocol(format!("rejected: {raw:?}")));
         }
         Ok(())
+    }
+
+    fn read_line(&self, timeout: Duration) -> Result<Vec<u8>> {
+        let mut port = self.inner.lock().unwrap();
+        let raw = read_until(&mut **port, b"\r\n", timeout)?;
+        if raw.is_empty() {
+            return Err(MakcuError::Timeout);
+        }
+        Ok(raw)
     }
 
     fn fire_and_forget(&self, name: &str, args: &[&str]) -> Result<()> {

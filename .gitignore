@@ -10,3 +10,6 @@ dist/
 .venv/
 venv/
 rust/target/
+# Local-only notes — never committed
+TODO.local.md
+*.local.md

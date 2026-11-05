@@ -8,6 +8,13 @@ pub enum Button {
     Side2 = 5,
 }
 
+impl Button {
+    /// V4 alias: `km.ms1` addresses the same side button as `km.side1`.
+    pub const MS1: Button = Button::Side1;
+    /// V4 alias: `km.ms2` addresses the same side button as `km.side2`.
+    pub const MS2: Button = Button::Side2;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ButtonOwnership {

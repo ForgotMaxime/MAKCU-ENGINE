@@ -18,3 +18,41 @@ def test_mouse_with_mock():
     assert "km.move(10,-5)" in t.sent
     assert "km.left(1)" in t.sent
     assert "km.click(1,2,50)" in t.sent
+
+
+def test_batch_with_mock():
+    t = MockTransport()
+    m = Mouse(t)
+    n = m.batch().move(10, 0).move(-10, 0).wheel(1).execute()
+    assert n == 3
+    assert len(t.sent) == 1
+    assert t.sent[0] == "km.move(10,0)\rkm.move(-10,0)\rkm.wheel(1)\r"
+
+
+def test_testbuild_features_with_mock():
+    t = MockTransport()
+    m = Mouse(t)
+    assert m.api_version() == 1
+    assert m.autorelease() == 0
+    m.set_autorelease(5000)
+    m.heartbeat()
+    assert "km.autorelease(5000)" in t.sent
+    assert "km.heartbeat()" in t.sent
+
+
+def test_button_stream_with_mock():
+    from makcu_engine.errors import MakcuTimeoutError
+
+    t = MockTransport()
+    m = Mouse(t)
+    m.start_button_stream(1)
+    t.push_stream_frame(b"km.\x01\r\n")
+    assert m.poll_button_event() == 0x01
+    m.stop_button_stream()
+    assert "km.buttons(1)" in t.sent
+    assert "km.buttons(0)" in t.sent
+    try:
+        m.poll_button_event()
+        raise AssertionError("should raise")
+    except MakcuTimeoutError:
+        pass

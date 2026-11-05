@@ -1,7 +1,11 @@
 use crate::{
     error::MakcuError,
-    protocol::{button_method, clamp_i16, mask_method, parse_device, parse_getpos, parse_screen},
-    Button, ButtonOwnership, DeviceInfo, LockTarget, Position, Result, Screen, Transport,
+    protocol::{
+        button_method, clamp_i16, mask_method, parse_button_event, parse_device, parse_getpos,
+        parse_screen,
+    },
+    BatchBuilder, Button, ButtonOwnership, DeviceInfo, LockTarget, Position, Result, Screen,
+    Transport,
 };
 
 pub struct Mouse<T: Transport> {
@@ -173,6 +177,56 @@ impl<T: Transport> Mouse<T> {
         let (x, y) = Self::i16s(dx, dy)?;
         self.t.fire_and_forget("km.move", &[&x, &y])
     }
+
+    pub fn batch(&self) -> BatchBuilder<'_, T> {
+        BatchBuilder::new(&self.t)
+    }
+
+    pub fn autorelease(&self) -> Result<u32> {
+        self.t
+            .query("km.autorelease", &[])?
+            .trim()
+            .parse()
+            .map_err(|_| MakcuError::Protocol("bad autorelease".into()))
+    }
+
+    pub fn set_autorelease(&self, timeout_ms: u32) -> Result<()> {
+        if timeout_ms > 60000 {
+            return Err(MakcuError::InvalidArgument(format!(
+                "autorelease: {timeout_ms}"
+            )));
+        }
+        let v = timeout_ms.to_string();
+        self.t.set("km.autorelease", &[&v])
+    }
+
+    pub fn heartbeat(&self) -> Result<()> {
+        self.t.set("km.heartbeat", &[])
+    }
+
+    pub fn api_version(&self) -> Result<u32> {
+        self.t
+            .query("km.api_version", &[])?
+            .trim()
+            .parse()
+            .map_err(|_| MakcuError::Protocol("bad api_version".into()))
+    }
+
+    pub fn start_button_stream(&self, mode: u8) -> Result<()> {
+        if !(1..=3).contains(&mode) {
+            return Err(MakcuError::InvalidArgument(format!("stream mode: {mode}")));
+        }
+        let v = mode.to_string();
+        self.t.set("km.buttons", &[&v])
+    }
+
+    pub fn stop_button_stream(&self) -> Result<()> {
+        self.t.set("km.buttons", &["0"])
+    }
+
+    pub fn poll_button_event(&self, timeout: std::time::Duration) -> Result<u8> {
+        parse_button_event(&self.t.read_line(timeout)?)
+    }
 }
 
 #[cfg(test)]
@@ -191,5 +245,42 @@ mod tests {
         m.down(Button::Left).unwrap();
         m.up(Button::Left, false).unwrap();
         m.click(Button::Left, 2, Some(50)).unwrap();
+    }
+
+    #[test]
+    fn mock_batch() {
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        let mut b = m.batch();
+        b.move_rel(10, 0).unwrap();
+        b.move_rel(-10, 0).unwrap();
+        b.wheel(1).unwrap();
+        assert_eq!(b.execute().unwrap(), 3);
+        assert_eq!(t.sent().len(), 1);
+        assert_eq!(t.sent()[0], "km.move(10,0)\rkm.move(-10,0)\rkm.wheel(1)\r");
+    }
+
+    #[test]
+    fn mock_testbuild() {
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        assert_eq!(m.api_version().unwrap(), 1);
+        assert_eq!(m.autorelease().unwrap(), 0);
+        m.set_autorelease(5000).unwrap();
+        m.heartbeat().unwrap();
+    }
+
+    #[test]
+    fn mock_stream() {
+        use std::time::Duration;
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        m.start_button_stream(1).unwrap();
+        t.push_stream_frame(b"km.\x01\r\n");
+        assert_eq!(
+            m.poll_button_event(Duration::from_millis(100)).unwrap(),
+            0x01
+        );
+        m.stop_button_stream().unwrap();
     }
 }

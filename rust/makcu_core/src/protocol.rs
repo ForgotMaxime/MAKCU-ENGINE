@@ -108,6 +108,13 @@ pub fn mask_method(b: Button) -> &'static str {
     }
 }
 
+pub fn parse_button_event(raw: &[u8]) -> Result<u8> {
+    if raw.len() == 6 && raw.starts_with(b"km.") && raw.ends_with(b"\r\n") {
+        return Ok(raw[3]);
+    }
+    Err(MakcuError::Protocol(format!("bad button frame: {raw:?}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +149,11 @@ mod tests {
     fn clamp() {
         assert!(clamp_i16(40000).is_err());
         assert_eq!(clamp_i16(-32768).unwrap(), -32768);
+    }
+
+    #[test]
+    fn button_event() {
+        assert_eq!(parse_button_event(b"km.\x03\r\n").unwrap(), 0x03);
+        assert!(parse_button_event(b"garbage\r\n").is_err());
     }
 }
