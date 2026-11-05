@@ -1,0 +1,8 @@
+[package]
+name = "makcu_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "makcu_core"
+path = "src/lib.rs"

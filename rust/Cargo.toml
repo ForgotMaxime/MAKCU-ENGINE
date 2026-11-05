@@ -1,0 +1,3 @@
+[workspace]
+members = ["makcu_core", "makcu_serial"]
+resolver = "2"

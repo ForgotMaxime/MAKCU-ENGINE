@@ -1,0 +1,12 @@
+[package]
+name = "makcu_serial"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "makcu_serial"
+path = "src/lib.rs"
+
+[dependencies]
+makcu_core = { path = "../makcu_core" }
+serialport = "4"
