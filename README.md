@@ -118,8 +118,6 @@ API surface (`Mouse`): `version/device/echo/set_echo/getpos/screen/moving/wait_i
 
 Transport: `detect()` → `(port, baud)`, `detect_all()`, `wait_for_device()` (hot-plug), `auto()` (detect + connect), `open(port, baud)`, `probe(port)`, `reconnect()`, `ensure_connected()`, `send_raw()`, `read_line()`, `read_exact()`, `start/stop_event_loop()`, `poll_event()`. Queries retry once on timeout; setters wrap the command name into protocol errors (`batch [...] failed`, `km.move failed`); single 80 ms ERR window. Debug logging via `logging.getLogger("makcu_engine")`.
 
-Transport: `detect()` → `(port, baud)`, `auto()` (detect + connect), `open(port, baud)`, `probe(port)`, `reconnect()`, `ensure_connected()`, `send_raw()`, `read_line()`, `read_exact()`. Queries retry once on timeout; setters wrap the command name into protocol errors (`batch [...] failed`, `km.move failed`); single 80 ms ERR window. Debug logging via `logging.getLogger("makcu_engine")`.
-
 Batching (one write, one ERR window — same setter set and validation as `Mouse`):
 
 ```python
@@ -191,7 +189,7 @@ Lower level: `MakcuTransport::list_candidates()` (CH343 VID/PID first), `MakcuTr
 
 Crates:
 
-- `makcu_core` — zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`), `BatchBuilder`, `ButtonMonitor`, `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types` with shared `check_*` validators. 18 unit tests (+ 7 hardware-gated, ignored in CI).
+- `makcu_core` - zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`), `BatchBuilder`, `ButtonMonitor`, `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types` with shared `check_*` validators. 19 unit tests (+ 7 hardware-gated, ignored in CI).
 - `makcu_serial` — `Transport for MakcuTransport` over `serialport`. Interior mutability via `Mutex`, `read_until` with 10 ms polls under caller deadline (never exceeds the ERR window), single-critical-section `send_raw`, open retry with backoff.
 
 ## Hardware Validation
@@ -203,10 +201,10 @@ Crates:
 | `move(+2,0)+move(-2,0)` net-zero | pass | pass | position unchanged |
 | batch full-set + `autorelease` roundtrip | pass (unit + HW) | pass (unit + HW) | firmware answers `autorelease` |
 | rejected-setter ERR window | unit | unit + HW-timed < 500 ms | `hw_setter_error_window_fast` (ignored) |
-| Unit (framing, parsing, validation, mock flow, batch, stream, monitor, smooth/drag, packaging) | 33 passed* | 18 passed | + 7 HW Rust (ignored) |
+| Unit (framing, parsing, validation, mock flow, batch, stream, monitor, smooth/drag, packaging) | 35 passed* | 19 passed | + 7 HW Rust (ignored) |
 | Lints | `ruff + mypy --strict` | `clippy -D warnings`, `fmt` | clean |
 
-\* 40 with 7 hardware-gated tests (6 integration + 1 event-loop) and 2 packaging tests.
+\* 43 with 8 hardware-gated tests and 2 packaging tests.
 
 Integration tests never click, never scroll, and never change persistent settings. Only `COM4` is touched; `COM3` (virtual, not ready) and `COM5/COM6` (ESP32-S3, `Unknown`) are left alone.
 

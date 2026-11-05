@@ -1,11 +1,18 @@
 """Event loop, discovery helpers, monitor — mock-level plus hardware coexistence."""
 
+import time
+
 import pytest
 
 serial = pytest.importorskip("serial")
 
 from makcu_engine import MakcuTransport, Mouse
-from makcu_engine.errors import MakcuError, MakcuProtocolError, MakcuTimeoutError
+from makcu_engine.errors import (
+    MakcuConnectionError,
+    MakcuError,
+    MakcuProtocolError,
+    MakcuTimeoutError,
+)
 from makcu_engine.events import ButtonMonitor
 from makcu_engine.mock import MockTransport
 
@@ -62,3 +69,48 @@ def test_hardware_loop_queries_during_stream():
             except MakcuProtocolError:
                 pass
             t.stop_event_loop()
+
+
+def test_event_loop_reader_death_raises_connection():
+    """A dead reader must surface MakcuConnectionError, not timeouts."""
+
+    class DeadSerial:
+        timeout = 0.8
+
+        def read(self, n):
+            raise serial.SerialException("gone")
+
+        def write(self, data):
+            return len(data)
+
+        def flush(self):
+            pass
+
+        def reset_input_buffer(self):
+            pass
+
+        def close(self):
+            pass
+
+    t = MakcuTransport("COMX", 4_000_000)
+    t._ser = DeadSerial()  # type: ignore[assignment]
+    t.start_event_loop()
+    try:
+        for _ in range(200):
+            if not t._loop._thread.is_alive():  # type: ignore[union-attr]
+                break
+            time.sleep(0.01)
+        assert not t._loop._thread.is_alive()  # type: ignore[union-attr]
+        try:
+            t.query("km.version")
+            raise AssertionError("should raise")
+        except MakcuConnectionError:
+            pass
+        try:
+            t.poll_event(0.1)
+            raise AssertionError("should raise")
+        except MakcuConnectionError:
+            pass
+    finally:
+        t.stop_event_loop()
+        t.close()

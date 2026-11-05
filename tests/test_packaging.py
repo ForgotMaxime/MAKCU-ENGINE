@@ -3,17 +3,29 @@
 import re
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10: no stdlib tomllib
+    tomllib = None  # type: ignore[assignment]
 
 import makcu_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _pyproject_version() -> str:
+    path = ROOT / "pyproject.toml"
+    if tomllib is not None:
+        with open(path, "rb") as f:
+            return tomllib.load(f)["project"]["version"]
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    assert m, "version not found in pyproject.toml"
+    return m.group(1)
+
+
 def test_python_version_single_sourced():
-    with open(ROOT / "pyproject.toml", "rb") as f:
-        pyproject = tomllib.load(f)
-    assert pyproject["project"]["version"] == makcu_engine.__version__
+    assert _pyproject_version() == makcu_engine.__version__
 
 
 def test_rust_workspace_version_inherited():

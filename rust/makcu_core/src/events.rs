@@ -1,16 +1,41 @@
 //! Background button-event pump: change callbacks plus drain queue.
+//!
+//! Works with the demux event loop running (polls never block queries)
+//! or on the legacy direct-poll path (no queries in flight).
+//!
+//! Lifecycle is explicit: `start` on a running monitor fails, `stop`
+//! is always safe, and `stop` then `start` cleanly restarts.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::{Mouse, Transport};
 
-type Callback = Box<dyn Fn(u8) + Send + 'static>;
+/// Shared callback handle: cloned under the lock, invoked after release,
+/// so a callback may freely register more callbacks or pump again.
+pub type Callback = Arc<dyn Fn(u8) + Send + Sync + 'static>;
+
+fn dispatch(
+    cbs: &Mutex<Vec<Callback>>,
+    pending: &Mutex<Vec<u8>>,
+    last: &Mutex<Option<u8>>,
+    mask: u8,
+) {
+    let fire = {
+        let mut last = last.lock().unwrap();
+        if *last == Some(mask) {
+            return;
+        }
+        *last = Some(mask);
+        pending.lock().unwrap().push(mask);
+        cbs.lock().unwrap().iter().cloned().collect::<Vec<_>>()
+    };
+    for cb in &fire {
+        cb(mask);
+    }
+}
 
 /// Background button-event pump: change callbacks + drain queue.
-/// Works with the demux event loop running (polls never block queries)
-/// or on the legacy direct-poll path.
-/// Background button-event pump: change callbacks plus drain queue.
 pub struct ButtonMonitor<T: Transport> {
     mouse: Arc<Mouse<T>>,
     poll: Duration,
@@ -36,12 +61,25 @@ impl<T: Transport + Send + Sync + 'static> ButtonMonitor<T> {
     }
 
     /// Register a callback invoked on each mask change.
-    pub fn on_change(&self, cb: impl Fn(u8) + Send + 'static) {
-        self.cbs.lock().unwrap().push(Box::new(cb));
+    pub fn on_change(&self, cb: impl Fn(u8) + Send + Sync + 'static) {
+        self.cbs.lock().unwrap().push(Arc::new(cb));
     }
 
     /// Enable the button stream and spawn the pump thread.
+    ///
+    /// Fails if the monitor is already running; `stop` first to restart.
     pub fn start(&self, mode: u8) -> crate::Result<()> {
+        if self
+            .handle
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|h| !h.is_finished())
+        {
+            return Err(crate::MakcuError::InvalidArgument(
+                "monitor already started".into(),
+            ));
+        }
         self.mouse.start_button_stream(mode)?;
         self.stop.store(false, std::sync::atomic::Ordering::SeqCst);
         let mouse = Arc::clone(&self.mouse);
@@ -55,16 +93,7 @@ impl<T: Transport + Send + Sync + 'static> ButtonMonitor<T> {
             .spawn(move || {
                 while !stop.load(std::sync::atomic::Ordering::SeqCst) {
                     match mouse.poll_button_event(poll) {
-                        Ok(mask) => {
-                            let mut last = last.lock().unwrap();
-                            if *last != Some(mask) {
-                                *last = Some(mask);
-                                pending.lock().unwrap().push(mask);
-                                for cb in cbs.lock().unwrap().iter() {
-                                    cb(mask);
-                                }
-                            }
-                        }
+                        Ok(mask) => dispatch(&cbs, &pending, &last, mask),
                         Err(_) => std::thread::sleep(poll),
                     }
                 }
@@ -74,7 +103,7 @@ impl<T: Transport + Send + Sync + 'static> ButtonMonitor<T> {
         Ok(())
     }
 
-    /// Stop the pump thread and disable the button stream.
+    /// Stop the pump thread and disable the button stream. Always safe.
     pub fn stop(&self) -> crate::Result<()> {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(h) = self.handle.lock().unwrap().take() {
@@ -89,14 +118,7 @@ impl<T: Transport + Send + Sync + 'static> ButtonMonitor<T> {
             Err(crate::MakcuError::Timeout) => Ok(None),
             Err(e) => Err(e),
             Ok(mask) => {
-                let mut last = self.last.lock().unwrap();
-                if *last != Some(mask) {
-                    *last = Some(mask);
-                    self.pending.lock().unwrap().push(mask);
-                    for cb in self.cbs.lock().unwrap().iter() {
-                        cb(mask);
-                    }
-                }
+                dispatch(&self.cbs, &self.pending, &self.last, mask);
                 Ok(Some(mask))
             }
         }

@@ -109,6 +109,8 @@ class _EventLoop:
         # No reset_input_buffer here: the reader owns the input stream.
         # Empty return = silent setter (echo off), like the legacy path.
         t = self._t
+        if not self._thread.is_alive():
+            raise MakcuConnectionError("event reader died")
         while True:
             try:
                 self._replies.get_nowait()
@@ -117,11 +119,16 @@ class _EventLoop:
         with t._lock:
             if t._ser is None:
                 raise MakcuConnectionError("transport not connected")
-            t._ser.write(payload)
-            t._ser.flush()
+            try:
+                t._ser.write(payload)
+                t._ser.flush()
+            except serial.SerialException as e:
+                raise MakcuConnectionError(f"write failed: {e}") from e
         try:
             return self._replies.get(timeout=timeout_s)
         except queue.Empty:
+            if not self._thread.is_alive():
+                raise MakcuConnectionError("event reader died") from None
             return b""
 
 
@@ -304,10 +311,12 @@ class MakcuTransport:
         return self._loop is not None
 
     def poll_event(self, timeout_s: float = 0.5) -> bytes:
-        """Next queued stream frame; only with the event loop running."""
+        """Next queued stream frame; fails fast if the reader died."""
         loop = self._loop
         if loop is None:
             raise MakcuProtocolError("event loop not running")
+        if not loop._thread.is_alive():
+            raise MakcuConnectionError("event reader died")
         try:
             return loop._events.get(timeout=timeout_s)
         except queue.Empty:

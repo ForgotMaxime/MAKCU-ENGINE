@@ -507,4 +507,37 @@ mod tests {
         let msg = format!("{e}");
         assert!(msg.contains("km.move") && msg.contains("km.wheel"), "{msg}");
     }
+
+    #[test]
+    fn mock_callback_reentrant_register() {
+        // A callback that registers another callback must not deadlock:
+        // callbacks run after all monitor locks are released.
+        use crate::events::ButtonMonitor;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+        let t = MockTransport::new();
+        t.push_stream_frame(b"km.\x01\r\n");
+        let m = Arc::new(Mouse::new(t));
+        let mon = Arc::new(ButtonMonitor::new(
+            Arc::clone(&m),
+            Duration::from_millis(10),
+        ));
+        let slot: Arc<Mutex<Option<Arc<ButtonMonitor<MockTransport>>>>> =
+            Arc::new(Mutex::new(None));
+        let slot2 = Arc::clone(&slot);
+        let seen = Arc::new(Mutex::new(0u32));
+        let seen2 = Arc::clone(&seen);
+        mon.on_change(move |_mask| {
+            *seen2.lock().unwrap() += 1;
+            slot2.lock().unwrap().as_ref().unwrap().on_change(|_| {});
+        });
+        *slot.lock().unwrap() = Some(Arc::clone(&mon));
+        m.start_button_stream(1).unwrap();
+        assert_eq!(
+            mon.pump_once(Duration::from_millis(100)).unwrap(),
+            Some(0x01)
+        );
+        assert_eq!(*seen.lock().unwrap(), 1);
+        m.stop_button_stream().unwrap();
+    }
 }

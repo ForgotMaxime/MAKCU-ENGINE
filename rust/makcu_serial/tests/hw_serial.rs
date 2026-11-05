@@ -39,6 +39,17 @@ fn hw_loop_queries_during_stream() {
     t.stop_event_loop().unwrap();
 }
 
+/// Restores echo-off on drop, even if the test panics mid-way.
+struct EchoGuard<'a, T: makcu_serial::Transport> {
+    mouse: &'a Mouse<T>,
+}
+
+impl<T: makcu_serial::Transport> Drop for EchoGuard<'_, T> {
+    fn drop(&mut self) {
+        let _ = self.mouse.set_echo(false);
+    }
+}
+
 #[test]
 #[ignore]
 fn hw_echo_on_queries() {
@@ -46,11 +57,10 @@ fn hw_echo_on_queries() {
     let m = Mouse::new(&t);
     let v0 = m.version().unwrap();
     m.set_echo(true).unwrap();
+    let _guard = EchoGuard { mouse: &m };
     assert_eq!(m.echo().unwrap(), 1);
     assert_eq!(m.version().unwrap(), v0);
     assert!(!m.device().unwrap().route.is_empty());
-    m.set_echo(false).unwrap();
-    assert_eq!(m.echo().unwrap(), 0);
 }
 
 #[test]

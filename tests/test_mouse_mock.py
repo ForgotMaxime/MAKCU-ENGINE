@@ -213,6 +213,45 @@ def test_monitor_start_stop_with_mock():
     assert "km.buttons(0)" in t.sent
 
 
+def test_monitor_double_start_is_an_error():
+    from makcu_engine.errors import MakcuProtocolError
+    from makcu_engine.events import ButtonMonitor
+
+    t = MockTransport()
+    mon = ButtonMonitor(Mouse(t))
+    mon.start(1)
+    try:
+        mon.start(1)
+        raise AssertionError("should raise")
+    except MakcuProtocolError:
+        pass
+    mon.stop()
+    mon.stop()  # idempotent
+    mon.start(1)  # restarts cleanly after stop
+    mon.stop()
+
+
+def test_monitor_callback_may_register():
+    from makcu_engine.events import ButtonMonitor
+
+    holder: dict = {}
+    t = MockTransport()
+    mon = ButtonMonitor(Mouse(t))
+
+    def cb(mask: int) -> None:
+        holder.setdefault("n", 0)
+        holder["n"] += 1
+        mon.on_change(lambda _m: holder.__setitem__("nested", True))
+
+    mon.on_change(cb)
+    mon._mouse.start_button_stream(1)
+    t.push_stream_frame(b"km.\x01\r\n")
+    assert mon.pump_once(0.2) == 0x01
+    assert holder["n"] == 1
+    assert len(mon._cbs) == 2
+    mon.stop()
+
+
 def test_monitor_thread_start_stop():
     """Real pump thread runs and stops; no events without presses."""
     import time

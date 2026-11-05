@@ -1,6 +1,33 @@
 # Changelog
 
-## 0.5.0 (Python) / 0.4.0 (Rust) — 2026-11-05
+## 0.5.1 (Python) / 0.4.1 (Rust) — 2026-11-05
+
+Second external audit, all points verified against code and fixed:
+- Release: the crates.io wait loop now requires the exact published
+  version (`makcu_core = "x.y.z"`), not just the crate name.
+- Dead event reader fails fast with `MakcuConnectionError` (both stacks)
+  instead of silent timeouts, so `ensure_connected()` can reconnect.
+  Covered by a white-box reader-death test (Python) and the HW loop test.
+- Rust `request()` no longer clears the input buffer while the loop owns
+  the stream (was dropping unread OS-buffered frames).
+- `MakcuTransport` is no longer `Clone` (Rust): `Drop` stops a running
+  loop, which would have disturbed other owners of a shared port.
+- `ButtonMonitor.start()` on a running monitor is an explicit error in
+  both languages; `stop()` is idempotent; restart allocates a fresh
+  thread (Python) instead of reusing a dead one.
+- Callbacks are invoked after releasing locks (snapshot-then-dispatch),
+  so a callback may register more callbacks or pump again.
+- CI now runs Python 3.10 + 3.12; `tomllib` import has a stdlib-free
+  fallback so the 3.10 job exercises the packaging test honestly.
+- HW echo test restores echo-off via RAII guard even on failure.
+- README: removed the duplicated Transport paragraph.
+- Full doc coverage both stacks (`ruff D100-D103`, rustdoc `missing_docs`
+  deny, `cargo doc -D warnings` in CI); `docs/protocol.md`; advanced
+  examples (`smooth.py`, `monitor.py`) verified on hardware.
+- Release pipeline hardened: `workspace.dependencies` (path-only dep broke
+  `cargo publish`), PyPI long-description wired, `twine check` green,
+  `cargo publish --dry-run` green for both crates, CI coverage gate 85 %
+  (measured 96 %).
 
 Completeness pass against official docs, the reference `makcu_api` and
 hardware probes:

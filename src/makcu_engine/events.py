@@ -2,6 +2,9 @@
 
 Works on both paths: with the transport event loop running (polls never
 block queries) or on the legacy direct-poll path (no queries in flight).
+
+Lifecycle is explicit: start() on a running monitor raises, stop() is
+always safe, and stop() then start() cleanly restarts with a fresh thread.
 """
 
 from __future__ import annotations
@@ -9,7 +12,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
-from .errors import MakcuTimeoutError
+from .errors import MakcuProtocolError, MakcuTimeoutError
 from .mouse import Mouse
 
 
@@ -20,27 +23,38 @@ class ButtonMonitor:
         self._poll_s = poll_s
         self._stop = threading.Event()
         self._cbs: list[Callable[[int], None]] = []
+        self._cbs_lock = threading.Lock()
         self._pending: list[int] = []
         self._last: int | None = None
-        self._thread = threading.Thread(target=self._run, daemon=True, name="makcu-monitor")
+        self._thread: threading.Thread | None = None
+        self._state_lock = threading.Lock()
 
     def on_change(self, cb: Callable[[int], None]) -> Callable[[int], None]:
         """Register a callback invoked on each mask change."""
-        self._cbs.append(cb)
+        with self._cbs_lock:
+            self._cbs.append(cb)
         return cb
 
     def start(self, mode: int = 1) -> None:
-        """Enable the button stream and start the pump thread."""
-        self._mouse.start_button_stream(mode)
-        self._stop.clear()
-        if not self._thread.is_alive():
+        """Enable the button stream and start the pump thread.
+
+        Raises if the monitor is already running; stop() first to restart.
+        """
+        with self._state_lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise MakcuProtocolError("monitor already started")
+            self._mouse.start_button_stream(mode)
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._run, daemon=True, name="makcu-monitor")
             self._thread.start()
 
     def stop(self) -> None:
-        """Stop the pump thread and disable the button stream."""
+        """Stop the pump thread and disable the button stream. Always safe."""
+        with self._state_lock:
+            thread, self._thread = self._thread, None
         self._stop.set()
-        if self._thread.is_alive():
-            self._thread.join(1.0)
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(1.0)
         try:
             self._mouse.stop_button_stream()
         except MakcuTimeoutError:
@@ -52,10 +66,12 @@ class ButtonMonitor:
             mask = self._mouse.poll_button_event(timeout_s)
         except MakcuTimeoutError:
             return None
+        with self._cbs_lock:
+            cbs = list(self._cbs)
         if mask != self._last:
             self._last = mask
             self._pending.append(mask)
-            for cb in list(self._cbs):
+            for cb in cbs:
                 cb(mask)
         return mask
 

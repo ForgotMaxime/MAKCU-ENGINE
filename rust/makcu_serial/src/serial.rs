@@ -26,6 +26,10 @@ const POLL: Duration = Duration::from_millis(10);
 struct EventState {
     running: AtomicBool,
     stop: AtomicBool,
+    /// Set when the reader thread died on a serial error (port gone).
+    /// Requests then fail fast with a connection error so callers can
+    /// reconnect instead of timing out against a dead reader.
+    dead: AtomicBool,
     replies: Mutex<VecDeque<Vec<u8>>>,
     reply_cv: Condvar,
     events: Mutex<VecDeque<Vec<u8>>>,
@@ -38,6 +42,7 @@ impl EventState {
         Self {
             running: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            dead: AtomicBool::new(false),
             replies: Mutex::new(VecDeque::new()),
             reply_cv: Condvar::new(),
             events: Mutex::new(VecDeque::new()),
@@ -58,7 +63,9 @@ struct Shared {
 }
 
 /// Exclusive serial transport with optional demux event loop.
-#[derive(Clone)]
+///
+/// Not `Clone` on purpose: `Drop` stops a running loop, which would
+/// disturb other owners of a shared port. Create one transport per port.
 pub struct MakcuTransport {
     shared: Arc<Shared>,
 }
@@ -192,12 +199,18 @@ impl MakcuTransport {
     }
 
     /// Request/response through the demux reader. Empty return = silent
-    /// setter (echo off), like the legacy direct path.
+    /// setter (echo off), like the legacy direct path. Never clears the
+    /// input buffer: the reader owns the stream and unread frames in the
+    /// OS buffer belong to it.
     fn request(&self, payload: &[u8], timeout: Duration) -> Result<Vec<u8>> {
+        if !self.shared.ev.running.load(Ordering::SeqCst)
+            || self.shared.ev.dead.load(Ordering::SeqCst)
+        {
+            return Err(MakcuError::Connection("event reader not running".into()));
+        }
         let _guard = self.shared.req.lock().unwrap();
         {
             let mut port = self.shared.port.lock().unwrap();
-            let _ = port.clear(serialport::ClearBuffer::All);
             port.write_all(payload)
                 .map_err(|e| MakcuError::Connection(e.to_string()))?;
             port.flush()
@@ -208,6 +221,9 @@ impl MakcuTransport {
         loop {
             if let Some(raw) = q.pop_front() {
                 return Ok(raw);
+            }
+            if self.shared.ev.dead.load(Ordering::SeqCst) {
+                return Err(MakcuError::Connection("event reader died".into()));
             }
             if Instant::now() >= deadline {
                 return Ok(Vec::new());
@@ -335,53 +351,58 @@ fn read_exact_poll(
 fn reader_loop(shared: Arc<Shared>) {
     // Take the port lock only around each individual read: writers must
     // be able to interleave, otherwise request() deadlocks on the lock.
-    {
-        let mut port = shared.port.lock().unwrap();
-        let _ = port.set_timeout(POLL);
-    }
-    let mut buf: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 256];
-    loop {
-        if shared.ev.stop.load(Ordering::SeqCst) {
-            break;
+    let clean_exit = (|| {
+        {
+            let mut port = shared.port.lock().ok()?;
+            port.set_timeout(POLL).ok()?;
         }
-        let n = {
-            let mut port = match shared.port.lock() {
-                Ok(g) => g,
-                Err(_) => break,
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 256];
+        loop {
+            if shared.ev.stop.load(Ordering::SeqCst) {
+                return Some(());
+            }
+            let n = {
+                let mut port = shared.port.lock().ok()?;
+                match port.read(&mut chunk) {
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => 0,
+                    Err(_) => return None,
+                }
             };
-            match port.read(&mut chunk) {
-                Ok(n) => n,
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => 0,
-                Err(_) => break,
+            if n > 0 {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() > 65536 {
+                    buf.drain(..buf.len() - 65536);
+                }
+                let (replies, events, rest) = makcu_core::protocol::split_frames(&buf);
+                buf = rest;
+                if !replies.is_empty() {
+                    let mut q = shared.ev.replies.lock().unwrap();
+                    q.extend(replies);
+                    shared.ev.reply_cv.notify_all();
+                }
+                if !events.is_empty() {
+                    let mut q = shared.ev.events.lock().unwrap();
+                    q.extend(events);
+                    shared.ev.event_cv.notify_all();
+                }
+            } else {
+                std::thread::sleep(Duration::from_millis(2));
             }
-        };
-        if n > 0 {
-            buf.extend_from_slice(&chunk[..n]);
-            if buf.len() > 65536 {
-                buf.drain(..buf.len() - 65536);
-            }
-            let (replies, events, rest) = makcu_core::protocol::split_frames(&buf);
-            buf = rest;
-            if !replies.is_empty() {
-                let mut q = shared.ev.replies.lock().unwrap();
-                q.extend(replies);
-                shared.ev.reply_cv.notify_all();
-            }
-            if !events.is_empty() {
-                let mut q = shared.ev.events.lock().unwrap();
-                q.extend(events);
-                shared.ev.event_cv.notify_all();
-            }
-        } else {
-            std::thread::sleep(Duration::from_millis(2));
         }
+    })();
+    if clean_exit.is_none() {
+        // Serial error (not a requested stop): mark the loop dead so
+        // requesters fail fast with a connection error instead of
+        // timing out against a dead reader.
+        shared.ev.dead.store(true, Ordering::SeqCst);
+        shared.ev.reply_cv.notify_all();
+        shared.ev.event_cv.notify_all();
     }
-    let mut port = match shared.port.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    let _ = port.set_timeout(shared.timeout);
+    if let Ok(mut port) = shared.port.lock() {
+        let _ = port.set_timeout(shared.timeout);
+    }
 }
 
 impl Drop for MakcuTransport {
@@ -462,6 +483,7 @@ impl Transport for MakcuTransport {
             let _ = port.clear(serialport::ClearBuffer::All);
         }
         self.shared.ev.stop.store(false, Ordering::SeqCst);
+        self.shared.ev.dead.store(false, Ordering::SeqCst);
         let shared = Arc::clone(&self.shared);
         let handle = std::thread::Builder::new()
             .name("makcu-events".into())
@@ -487,8 +509,12 @@ impl Transport for MakcuTransport {
     }
 
     fn poll_event(&self, timeout: Duration) -> Result<Vec<u8>> {
-        if !self.shared.ev.running.load(Ordering::SeqCst) {
+        let ev = &self.shared.ev;
+        if !ev.running.load(Ordering::SeqCst) {
             return Err(MakcuError::Protocol("event loop not running".into()));
+        }
+        if ev.dead.load(Ordering::SeqCst) {
+            return Err(MakcuError::Connection("event reader died".into()));
         }
         let deadline = Instant::now() + timeout;
         let mut q = self.shared.ev.events.lock().unwrap();
