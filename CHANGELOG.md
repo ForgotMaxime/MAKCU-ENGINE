@@ -21,6 +21,11 @@ Second external audit, all points verified against code and fixed:
   fallback so the 3.10 job exercises the packaging test honestly.
 - HW echo test restores echo-off via RAII guard even on failure.
 - README: removed the duplicated Transport paragraph.
+- Licensing groundwork: dual `MIT OR Apache-2.0` (`LICENSE-MIT`,
+  `LICENSE-APACHE`), SPDX expression + author + repository wired into
+  `pyproject.toml` and both crates (workspace inheritance); sole author,
+  no third-party code copied, no secrets; only MPL-2.0 `serialport`
+  dependency (weak file-level copyleft, compatible as an unmodified dep).
 - Full doc coverage both stacks (`ruff D100-D103`, rustdoc `missing_docs`
   deny, `cargo doc -D warnings` in CI); `docs/protocol.md`; advanced
   examples (`smooth.py`, `monitor.py`) verified on hardware.

@@ -5,6 +5,10 @@ resolver = "2"
 [workspace.package]
 version = "0.4.1"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["ForgotMaxime"]
+repository = "https://github.com/ForgotMaxime/MAKCU-ENGINE"
+description = "MAKCU V4 mouse-only engine"
 
 [workspace.dependencies]
 makcu_core = { version = "0.4.0", path = "makcu_core" }

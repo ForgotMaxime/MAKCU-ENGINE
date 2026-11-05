@@ -2,6 +2,10 @@
 name = "makcu_serial"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "MAKCU V4 mouse-only engine (serial transport)"
 
 [lib]
 name = "makcu_serial"

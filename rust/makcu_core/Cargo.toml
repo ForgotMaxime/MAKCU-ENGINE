@@ -2,6 +2,10 @@
 name = "makcu_core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "MAKCU V4 mouse-only engine (zero-dependency core)"
 
 [lib]
 name = "makcu_core"

@@ -220,3 +220,10 @@ Integration tests never click, never scroll, and never change persistent setting
 | `BatchBuilder` full setter set | `BatchBuilder` full setter set | identical coverage, identical validation |
 | `errors.ConnectionError` shadowing builtin | `MakcuConnectionError` etc. | prefixed to avoid shadowing `std` |
 | `config.PROMPT = b">>> "` | `makcu_serial::PROMPT` | single prompt constant, no duplication |
+
+## License
+
+Dual-licensed `MIT OR Apache-2.0` — see [LICENSE-MIT](LICENSE-MIT) and
+[LICENSE-APACHE](LICENSE-APACHE). Copyright (c) 2026 ForgotMaxime.
+Pick whichever fits your project; the Rust crates declare the same
+SPDX expression, so `cargo`/`pip` tooling resolves it automatically.
