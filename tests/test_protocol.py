@@ -1,4 +1,5 @@
 from makcu_engine import protocol
+from makcu_engine.errors import MakcuProtocolError
 from makcu_engine.types import Button
 
 
@@ -43,8 +44,47 @@ def test_button_aliases():
 
 def test_button_event():
     assert protocol.parse_button_event(b"km.\x03\r\n") == 0x03
+    for bad in (b"garbage\r\n", b"km.\x03", b"", b"km.\x03\r\n>>> "):
+        try:
+            protocol.parse_button_event(bad)
+            raise AssertionError(f"should raise for {bad!r}")
+        except MakcuProtocolError:
+            pass
+
+
+def test_malformed_replies_raise_protocol_error():
+    for bad in ("km.screen(1,2", "km.screen(a,b)", "nope", "km.getpos(1)"):
+        for fn in (protocol.parse_screen, protocol.parse_getpos):
+            try:
+                fn(bad)
+                raise AssertionError(f"should raise for {bad!r}")
+            except MakcuProtocolError:
+                pass
     try:
-        protocol.parse_button_event(b"garbage\r\n")
+        protocol.strip_prompt(b"no prompt here")
         raise AssertionError("should raise")
-    except ValueError:
+    except MakcuProtocolError:
         pass
+    try:
+        protocol.parse_screen("km.screen(0,1080)")
+        raise AssertionError("should raise")
+    except MakcuProtocolError:
+        pass
+
+
+def test_shared_validators():
+    for fn in (
+        lambda: protocol.check_xy(-1, 0),
+        lambda: protocol.check_xy(0, 32768),
+        lambda: protocol.check_mask_bit(2),
+        lambda: protocol.check_click(0, 1, None),
+        lambda: protocol.check_click(1, 0, None),
+        lambda: protocol.check_click(1, 1, 0),
+        lambda: protocol.check_stream_mode(4),
+        lambda: protocol.check_autorelease(60001),
+    ):
+        try:
+            fn()
+            raise AssertionError("should raise")
+        except MakcuProtocolError:
+            pass

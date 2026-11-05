@@ -1,8 +1,9 @@
 use crate::{
     error::MakcuError,
     protocol::{
-        button_method, clamp_i16, mask_method, parse_button_event, parse_device, parse_getpos,
-        parse_screen,
+        button_method, check_autorelease, check_click, check_mask_bit, check_screen_size,
+        check_stream_mode, check_xy, clamp_i16, mask_method, parse_button_event, parse_device,
+        parse_getpos, parse_screen,
     },
     BatchBuilder, Button, ButtonOwnership, DeviceInfo, LockTarget, Position, Result, Screen,
     Transport,
@@ -78,20 +79,13 @@ impl<T: Transport> Mouse<T> {
     }
 
     pub fn moveto(&self, x: i32, y: i32) -> Result<()> {
-        if !(0..=32767).contains(&x) {
-            return Err(MakcuError::InvalidArgument(format!("x: {x}")));
-        }
-        if !(0..=32767).contains(&y) {
-            return Err(MakcuError::InvalidArgument(format!("y: {y}")));
-        }
+        check_xy(x, y)?;
         let (xs, ys) = (x.to_string(), y.to_string());
         self.t.set("km.moveto", &[&xs, &ys])
     }
 
     pub fn set_screen(&self, w: i32, h: i32) -> Result<()> {
-        if !(1..=32767).contains(&w) || !(1..=32767).contains(&h) {
-            return Err(MakcuError::InvalidArgument("screen range".into()));
-        }
+        check_screen_size(w, h)?;
         let (ws, hs) = (w.to_string(), h.to_string());
         self.t.set("km.screen", &[&ws, &hs])
     }
@@ -102,6 +96,7 @@ impl<T: Transport> Mouse<T> {
     }
 
     pub fn silent(&self, x: i32, y: i32) -> Result<()> {
+        check_xy(x, y)?;
         let (xs, ys) = (x.to_string(), y.to_string());
         self.t.set("km.silent", &[&xs, &ys])
     }
@@ -119,17 +114,9 @@ impl<T: Transport> Mouse<T> {
 
     pub fn click(&self, b: Button, count: u32, hold_ms: Option<u32>) -> Result<()> {
         let n = b as u32;
-        if !(1..=5).contains(&n) {
-            return Err(MakcuError::InvalidArgument("button".into()));
-        }
-        if !(1..=255).contains(&count) {
-            return Err(MakcuError::InvalidArgument("count".into()));
-        }
+        check_click(n, count, hold_ms)?;
         let (ns, cs) = (n.to_string(), count.to_string());
         if let Some(h) = hold_ms {
-            if !(1..=5000).contains(&h) {
-                return Err(MakcuError::InvalidArgument("hold_ms".into()));
-            }
             let hs = h.to_string();
             self.t.set("km.click", &[&ns, &cs, &hs])
         } else {
@@ -137,25 +124,23 @@ impl<T: Transport> Mouse<T> {
         }
     }
 
-    fn check_mask(v: i32) -> Result<String> {
-        if v != 0 && v != 1 {
-            return Err(MakcuError::InvalidArgument("mask 0/1".into()));
-        }
-        Ok(v.to_string())
-    }
-
     pub fn set_move_mask(&self, left: i32, right: i32, down: i32, up: i32) -> Result<()> {
+        for v in [left, right, down, up] {
+            check_mask_bit(v)?;
+        }
         let (l, r, d, u) = (
-            Self::check_mask(left)?,
-            Self::check_mask(right)?,
-            Self::check_mask(down)?,
-            Self::check_mask(up)?,
+            left.to_string(),
+            right.to_string(),
+            down.to_string(),
+            up.to_string(),
         );
         self.t.set("km.move_mask", &[&l, &r, &d, &u])
     }
 
     pub fn set_wheel_mask(&self, down: i32, up: i32) -> Result<()> {
-        let (d, u) = (Self::check_mask(down)?, Self::check_mask(up)?);
+        check_mask_bit(down)?;
+        check_mask_bit(up)?;
+        let (d, u) = (down.to_string(), up.to_string());
         self.t.set("km.wheel_mask", &[&d, &u])
     }
 
@@ -191,11 +176,7 @@ impl<T: Transport> Mouse<T> {
     }
 
     pub fn set_autorelease(&self, timeout_ms: u32) -> Result<()> {
-        if timeout_ms > 60000 {
-            return Err(MakcuError::InvalidArgument(format!(
-                "autorelease: {timeout_ms}"
-            )));
-        }
+        check_autorelease(timeout_ms)?;
         let v = timeout_ms.to_string();
         self.t.set("km.autorelease", &[&v])
     }
@@ -213,9 +194,7 @@ impl<T: Transport> Mouse<T> {
     }
 
     pub fn start_button_stream(&self, mode: u8) -> Result<()> {
-        if !(1..=3).contains(&mode) {
-            return Err(MakcuError::InvalidArgument(format!("stream mode: {mode}")));
-        }
+        check_stream_mode(mode)?;
         let v = mode.to_string();
         self.t.set("km.buttons", &[&v])
     }
@@ -258,6 +237,31 @@ mod tests {
         assert_eq!(b.execute().unwrap(), 3);
         assert_eq!(t.sent().len(), 1);
         assert_eq!(t.sent()[0], "km.move(10,0)\rkm.move(-10,0)\rkm.wheel(1)\r");
+    }
+
+    #[test]
+    fn batch_validates_like_mouse() {
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        let mut b = m.batch();
+        assert!(b.click(Button::Left, 0, None).is_err());
+        assert!(b.click(Button::Left, 1, Some(6000)).is_err());
+        assert!(b.moveto(-1, 0).is_err());
+        assert!(b.silent(0, 40000).is_err());
+        assert!(b.set_move_mask(0, 0, 0, 2).is_err());
+        assert!(b.set_autorelease(60001).is_err());
+        assert!(b.is_empty());
+        b.move_now(1, 1).unwrap();
+        b.moveto(100, 100).unwrap();
+        b.silent(100, 100).unwrap();
+        b.click(Button::Right, 2, Some(50)).unwrap();
+        b.set_move_mask(1, 0, 0, 0).unwrap();
+        b.set_wheel_mask(0, 1).unwrap();
+        b.set_button_mask(Button::Left, true);
+        b.set_autorelease(1000).unwrap();
+        b.heartbeat();
+        assert_eq!(b.execute().unwrap(), 9);
+        assert_eq!(t.sent().len(), 1);
     }
 
     #[test]

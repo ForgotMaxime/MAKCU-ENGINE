@@ -70,9 +70,7 @@ fn parse_pair(payload: &str) -> Result<(i32, i32)> {
 
 pub fn parse_screen(payload: &str) -> Result<Screen> {
     let (w, h) = parse_pair(payload)?;
-    if !(1..=32767).contains(&w) || !(1..=32767).contains(&h) {
-        return Err(MakcuError::Protocol("screen out of range".into()));
-    }
+    check_screen_size(w, h)?;
     Ok(Screen {
         width: w as u16,
         height: h as u16,
@@ -86,6 +84,61 @@ pub fn parse_getpos(payload: &str) -> Result<Position> {
 
 pub fn clamp_i16(v: i32) -> Result<i16> {
     i16::try_from(v).map_err(|_| MakcuError::InvalidArgument(format!("out of i16 range: {v}")))
+}
+
+pub fn check_xy(x: i32, y: i32) -> Result<()> {
+    if !(0..=32767).contains(&x) {
+        return Err(MakcuError::InvalidArgument(format!("x: {x}")));
+    }
+    if !(0..=32767).contains(&y) {
+        return Err(MakcuError::InvalidArgument(format!("y: {y}")));
+    }
+    Ok(())
+}
+
+pub fn check_screen_size(w: i32, h: i32) -> Result<()> {
+    if !(1..=32767).contains(&w) || !(1..=32767).contains(&h) {
+        return Err(MakcuError::InvalidArgument(format!("screen: {w}x{h}")));
+    }
+    Ok(())
+}
+
+pub fn check_mask_bit(v: i32) -> Result<()> {
+    if v != 0 && v != 1 {
+        return Err(MakcuError::InvalidArgument(format!("mask 0/1: {v}")));
+    }
+    Ok(())
+}
+
+pub fn check_click(button: u32, count: u32, hold_ms: Option<u32>) -> Result<()> {
+    if !(1..=5).contains(&button) {
+        return Err(MakcuError::InvalidArgument(format!("button: {button}")));
+    }
+    if !(1..=255).contains(&count) {
+        return Err(MakcuError::InvalidArgument(format!("count: {count}")));
+    }
+    if let Some(h) = hold_ms {
+        if !(1..=5000).contains(&h) {
+            return Err(MakcuError::InvalidArgument(format!("hold_ms: {h}")));
+        }
+    }
+    Ok(())
+}
+
+pub fn check_stream_mode(mode: u8) -> Result<()> {
+    if !(1..=3).contains(&mode) {
+        return Err(MakcuError::InvalidArgument(format!("stream mode: {mode}")));
+    }
+    Ok(())
+}
+
+pub fn check_autorelease(timeout_ms: u32) -> Result<()> {
+    if timeout_ms > 60000 {
+        return Err(MakcuError::InvalidArgument(format!(
+            "autorelease: {timeout_ms}"
+        )));
+    }
+    Ok(())
 }
 
 pub fn button_method(b: Button) -> &'static str {

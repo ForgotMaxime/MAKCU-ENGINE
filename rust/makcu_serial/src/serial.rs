@@ -137,6 +137,24 @@ fn read_until(
     delim: &[u8],
     timeout: Duration,
 ) -> Result<Vec<u8>> {
+    // The port's own timeout governs each blocking read(): clamp it so a
+    // single read can never exceed the caller's deadline (e.g. the 80 ms
+    // ERR window on silent setters opened at 800 ms).
+    let prev = port.timeout();
+    const POLL: Duration = Duration::from_millis(10);
+    if port.set_timeout(POLL).is_err() {
+        return Err(MakcuError::Connection("set_timeout failed".into()));
+    }
+    let out = read_until_poll(port, delim, timeout);
+    let _ = port.set_timeout(prev);
+    out
+}
+
+fn read_until_poll(
+    port: &mut dyn serialport::SerialPort,
+    delim: &[u8],
+    timeout: Duration,
+) -> Result<Vec<u8>> {
     let deadline = Instant::now() + timeout;
     let mut out = Vec::new();
     let mut buf = [0u8; 256];
@@ -170,14 +188,14 @@ impl Transport for MakcuTransport {
     }
 
     fn send_raw(&self, data: &[u8]) -> Result<()> {
+        // Single critical section: another op must not interleave between
+        // the write and the ERR-window read, or it would consume our reply.
         let mut port = self.inner.lock().unwrap();
         let _ = port.clear(serialport::ClearBuffer::Input);
         port.write_all(data)
             .map_err(|e| MakcuError::Connection(e.to_string()))?;
         port.flush()
             .map_err(|e| MakcuError::Connection(e.to_string()))?;
-        drop(port);
-        let mut port = self.inner.lock().unwrap();
         let raw = read_until(&mut **port, PROMPT, ERROR_WINDOW)?;
         if contains(&raw, b"ERR") {
             return Err(MakcuError::Protocol(format!("rejected: {raw:?}")));

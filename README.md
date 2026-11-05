@@ -107,11 +107,17 @@ API surface (`Mouse`): `version/device/echo/set_echo/getpos/screen/moving/button
 
 Transport: `detect()` → `(port, baud)`, `auto()` (detect + connect), `open(port, baud)`, `probe(port)`, `reconnect()`, `ensure_connected()`, `send_raw()`, `read_line()`. Queries retry once on timeout; setters use a single 80 ms ERR window. Debug logging via `logging.getLogger("makcu_engine")`.
 
-Batching (one write, one ERR window):
+Batching (one write, one ERR window — same setter set and validation as `Mouse`):
 
 ```python
 with MakcuTransport.auto() as t:
-    n = Mouse(t).batch().move(2, 0).move(-2, 0).wheel(0).execute()
+    n = (
+        Mouse(t).batch()
+        .move(2, 0).move(-2, 0).wheel(0)
+        .moveto(100, 100).silent(100, 100)
+        .click(Button.LEFT, 2, 50)
+        .execute()
+    )
 ```
 
 Button stream (no queries in flight while polling):
@@ -125,7 +131,9 @@ mouse.stop_button_stream()
 Measured on `COM4 @ 4M` (`examples/benchmark.py`): query ~0.21 ms avg, 100×
 fire-and-forget ~6.6 ms total, batch×3 ~94 ms (1 ERR window per batch vs 1 per setter).
 
-Error model: `MakcuError` → `MakcuConnectionError | MakcuTimeoutError | MakcuProtocolError`. Argument validation raises `ValueError`.
+Error model: `MakcuError` → `MakcuConnectionError | MakcuTimeoutError | MakcuProtocolError`. All parsers and argument validators raise `MakcuProtocolError` (also a `ValueError` subclass, so stdlib-style `except ValueError` keeps working).
+
+Versions: Python declares once in `pyproject.toml`, asserted equal to `makcu_engine.__version__` by `tests/test_packaging.py`. Rust declares once in `rust/Cargo.toml` (`[workspace.package]`), members inherit via `version.workspace = true`.
 
 ## Rust Workspace
 
@@ -154,8 +162,8 @@ Lower level: `MakcuTransport::list_candidates()` (CH343 VID/PID first), `MakcuTr
 
 Crates:
 
-- `makcu_core` — zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`), `BatchBuilder`, `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types`. 10 unit tests.
-- `makcu_serial` — `Transport for MakcuTransport` over `serialport`. Interior mutability via `Mutex`, `read_until` with deadline loop, open retry with backoff.
+- `makcu_core` — zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`), `BatchBuilder`, `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types` with shared `check_*` validators. 11 unit tests (+ 3 hardware-gated, ignored in CI).
+- `makcu_serial` — `Transport for MakcuTransport` over `serialport`. Interior mutability via `Mutex`, `read_until` with 10 ms polls under caller deadline (never exceeds the ERR window), single-critical-section `send_raw`, open retry with backoff.
 
 ## Hardware Validation
 
@@ -164,11 +172,12 @@ Crates:
 | `detect()` (VID/PID-ordered scan + probe) | `test_integration` | `check_mouse` | `COM4 @ 4000000` |
 | `version/device/echo/screen/getpos/moving` | pass | pass | `km.MAKCU`, `MK/8uf`, `1920x1080` |
 | `move(+2,0)+move(-2,0)` net-zero | pass | pass | position unchanged |
-| batch×3 / autorelease roundtrip | pass | mock-only | firmware answers `autorelease` |
-| Unit (framing, parsing, clamp, mock flow, batch, stream) | 11 passed* | 10 passed | — |
+| batch full-set + `autorelease` roundtrip | pass (unit + HW) | pass (unit + HW) | firmware answers `autorelease` |
+| rejected-setter ERR window | unit | unit + HW-timed < 500 ms | `hw_setter_error_window_fast` (ignored) |
+| Unit (framing, parsing, validation, mock flow, batch, stream) | 14 passed* | 11 passed | — |
 | Lints | `ruff + mypy --strict` | `clippy -D warnings`, `fmt` | clean |
 
-\* 14 with the 3 hardware-gated integration tests.
+\* 19 with the 3 hardware-gated integration tests and 2 packaging tests.
 
 Integration tests never click, never scroll, and never change persistent settings. Only `COM4` is touched; `COM3` (virtual, not ready) and `COM5/COM6` (ESP32-S3, `Unknown`) are left alone.
 
@@ -178,6 +187,9 @@ Integration tests never click, never scroll, and never change persistent setting
 |---|---|---|
 | `Mouse.move(dx, dy)` | `Mouse::move_rel(dx, dy)` | `move` is a keyword in Rust |
 | `abc.Transport` (Protocol) | `makcu_core::Transport` (trait) | `query/set/fire_and_forget/send_raw/read_line` |
-| `MockTransport` | `makcu_core::MockTransport` | same canned replies, `sent()` log |
+| `MockTransport` | `makcu_core::MockTransport` | same canned replies, `sent()` log, stream-frame queue |
+| `MakcuProtocolError` (+ `ValueError`) | `MakcuError::{Protocol, InvalidArgument}` | validation/parsing errors coherent per language idiom |
+| `protocol.check_*` validators | `protocol::check_*` validators | single definition used by `Mouse` and `BatchBuilder` |
+| `BatchBuilder` full setter set | `BatchBuilder` full setter set | identical coverage, identical validation |
 | `errors.ConnectionError` shadowing builtin | `MakcuConnectionError` etc. | prefixed to avoid shadowing `std` |
 | `config.PROMPT = b">>> "` | `makcu_serial::PROMPT` | single prompt constant, no duplication |

@@ -1,5 +1,13 @@
-use crate::{protocol::build_cmd, Button, LockTarget, Result, Transport};
+use crate::{
+    protocol::{
+        build_cmd, button_method, check_autorelease, check_click, check_mask_bit, check_xy,
+        clamp_i16, mask_method,
+    },
+    Button, LockTarget, Result, Transport,
+};
 
+/// Coalesced setter batch: one write, one ERR-window read.
+/// Same setter set and validation as [`crate::Mouse`]; queries refused.
 pub struct BatchBuilder<'a, T: Transport> {
     t: &'a T,
     buf: Vec<u8>,
@@ -29,22 +37,39 @@ impl<'a, T: Transport> BatchBuilder<'a, T> {
         self
     }
 
+    fn i16arg(v: i32) -> Result<String> {
+        Ok(clamp_i16(v)?.to_string())
+    }
+
     pub fn move_rel(&mut self, dx: i32, dy: i32) -> Result<&mut Self> {
-        let (x, y) = (
-            crate::protocol::clamp_i16(dx)?.to_string(),
-            crate::protocol::clamp_i16(dy)?.to_string(),
-        );
+        let (x, y) = (Self::i16arg(dx)?, Self::i16arg(dy)?);
         Ok(self.add("km.move", &[&x, &y]))
     }
 
+    pub fn move_now(&mut self, dx: i32, dy: i32) -> Result<&mut Self> {
+        let (x, y) = (Self::i16arg(dx)?, Self::i16arg(dy)?);
+        Ok(self.add("km.move_now", &[&x, &y]))
+    }
+
+    pub fn moveto(&mut self, x: i32, y: i32) -> Result<&mut Self> {
+        check_xy(x, y)?;
+        let (xs, ys) = (x.to_string(), y.to_string());
+        Ok(self.add("km.moveto", &[&xs, &ys]))
+    }
+
+    pub fn silent(&mut self, x: i32, y: i32) -> Result<&mut Self> {
+        check_xy(x, y)?;
+        let (xs, ys) = (x.to_string(), y.to_string());
+        Ok(self.add("km.silent", &[&xs, &ys]))
+    }
+
     pub fn wheel(&mut self, delta: i32) -> Result<&mut Self> {
-        let d = crate::protocol::clamp_i16(delta)?.to_string();
+        let d = Self::i16arg(delta)?;
         Ok(self.add("km.wheel", &[&d]))
     }
 
     pub fn down(&mut self, b: Button) -> &mut Self {
-        let m = crate::protocol::button_method(b);
-        let cmd = format!("km.{m}");
+        let cmd = format!("km.{}", button_method(b));
         let raw = build_cmd(&cmd, &["1"]);
         self.buf.extend_from_slice(&raw);
         self.count += 1;
@@ -52,9 +77,55 @@ impl<'a, T: Transport> BatchBuilder<'a, T> {
     }
 
     pub fn up(&mut self, b: Button) -> &mut Self {
-        let m = crate::protocol::button_method(b);
-        let cmd = format!("km.{m}");
+        let cmd = format!("km.{}", button_method(b));
         let raw = build_cmd(&cmd, &["0"]);
+        self.buf.extend_from_slice(&raw);
+        self.count += 1;
+        self
+    }
+
+    pub fn click(&mut self, b: Button, count: u32, hold_ms: Option<u32>) -> Result<&mut Self> {
+        let n = b as u32;
+        check_click(n, count, hold_ms)?;
+        let (ns, cs) = (n.to_string(), count.to_string());
+        if let Some(h) = hold_ms {
+            let hs = h.to_string();
+            Ok(self.add("km.click", &[&ns, &cs, &hs]))
+        } else {
+            Ok(self.add("km.click", &[&ns, &cs]))
+        }
+    }
+
+    pub fn set_move_mask(
+        &mut self,
+        left: i32,
+        right: i32,
+        down: i32,
+        up: i32,
+    ) -> Result<&mut Self> {
+        for v in [left, right, down, up] {
+            check_mask_bit(v)?;
+        }
+        let (l, r, d, u) = (
+            left.to_string(),
+            right.to_string(),
+            down.to_string(),
+            up.to_string(),
+        );
+        Ok(self.add("km.move_mask", &[&l, &r, &d, &u]))
+    }
+
+    pub fn set_wheel_mask(&mut self, down: i32, up: i32) -> Result<&mut Self> {
+        check_mask_bit(down)?;
+        check_mask_bit(up)?;
+        let (d, u) = (down.to_string(), up.to_string());
+        Ok(self.add("km.wheel_mask", &[&d, &u]))
+    }
+
+    pub fn set_button_mask(&mut self, b: Button, enabled: bool) -> &mut Self {
+        let cmd = format!("km.{}", mask_method(b));
+        let v = if enabled { "1" } else { "0" };
+        let raw = build_cmd(&cmd, &[v]);
         self.buf.extend_from_slice(&raw);
         self.count += 1;
         self
@@ -64,6 +135,19 @@ impl<'a, T: Transport> BatchBuilder<'a, T> {
         let cmd = format!("km.lock_{}", t.as_str());
         let v = if enabled { "1" } else { "0" };
         let raw = build_cmd(&cmd, &[v]);
+        self.buf.extend_from_slice(&raw);
+        self.count += 1;
+        self
+    }
+
+    pub fn set_autorelease(&mut self, timeout_ms: u32) -> Result<&mut Self> {
+        check_autorelease(timeout_ms)?;
+        let v = timeout_ms.to_string();
+        Ok(self.add("km.autorelease", &[&v]))
+    }
+
+    pub fn heartbeat(&mut self) -> &mut Self {
+        let raw = build_cmd("km.heartbeat", &[]);
         self.buf.extend_from_slice(&raw);
         self.count += 1;
         self

@@ -180,10 +180,7 @@ class MakcuTransport:
                 continue
         else:
             raise last
-        try:
-            return strip_prompt(raw)
-        except ValueError as e:
-            raise MakcuProtocolError(str(e)) from e
+        return strip_prompt(raw)
 
     def set(self, name: str, *args: int | str, error_window_s: float = 0.08) -> None:
         self.send_raw(build_cmd(name, *args), error_window_s)

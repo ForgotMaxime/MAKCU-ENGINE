@@ -29,6 +29,42 @@ def test_batch_with_mock():
     assert t.sent[0] == "km.move(10,0)\rkm.move(-10,0)\rkm.wheel(1)\r"
 
 
+def test_batch_validates_like_mouse():
+    from makcu_engine.errors import MakcuProtocolError
+
+    t = MockTransport()
+    m = Mouse(t)
+    for build in (
+        lambda: m.batch().click(Button.LEFT, 0),
+        lambda: m.batch().click(Button.LEFT, 1, 6000),
+        lambda: m.batch().moveto(-1, 0),
+        lambda: m.batch().silent(0, 40000),
+        lambda: m.batch().set_move_mask(0, 0, 0, 2),
+        lambda: m.batch().set_autorelease(-1),
+    ):
+        try:
+            build()
+            raise AssertionError("should raise")
+        except MakcuProtocolError:
+            pass
+    assert t.sent == []
+    n = (
+        m.batch()
+        .move_now(1, 1)
+        .moveto(100, 100)
+        .silent(100, 100)
+        .click(Button.RIGHT, 2, 50)
+        .set_move_mask(1, 0, 0, 0)
+        .set_wheel_mask(0, 1)
+        .set_button_mask(Button.LEFT, True)
+        .set_autorelease(1000)
+        .heartbeat()
+        .execute()
+    )
+    assert n == 9
+    assert len(t.sent) == 1
+
+
 def test_testbuild_features_with_mock():
     t = MockTransport()
     m = Mouse(t)

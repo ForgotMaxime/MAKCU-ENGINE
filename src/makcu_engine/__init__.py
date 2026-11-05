@@ -14,7 +14,7 @@ from .mouse import Mouse
 from .transport import MakcuTransport, list_candidates
 from .types import Button, ButtonOwnership, DeviceInfo, LockTarget, Position, Screen
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "BAUDS",

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.1 (Python) / 0.2.2 (Rust) — 2026-11-05
+
+Audit fixes (all six points verified against code, both stacks):
+- Rust `send_raw`: single critical section (no lock drop between write and
+  ERR-window read); `read_until` clamps the port timeout to 10 ms polls so a
+  call can never exceed its deadline (previously one `read()` could block the
+  full 800 ms port timeout). Hardware-timed: rejected setter < 500 ms.
+- Shared validators (`protocol.check_*`, used by `Mouse` and `BatchBuilder`
+  alike): `silent`/`moveto` coordinate ranges, screen size on parse, click
+  args in batches — no more per-path divergence.
+- Python parsers raise `MakcuProtocolError` (also a `ValueError` subclass for
+  stdlib compat) instead of bare `ValueError`/`IndexError`.
+- Batch parity: identical setter set in both languages
+  (`move/move_now/moveto/silent/wheel/down/up/click/masks/lock/autorelease/heartbeat`).
+- Versions: Rust workspace single source (`[workspace.package]` + `version.workspace`);
+  Python `pyproject == __init__.__version__` enforced by `tests/test_packaging.py`.
+
 ## 0.3.0 (Python) / 0.2.0 (Rust) — 2026-11-05
 
 Validated against MAKCU V4 official on `COM4 @ 4000000` (`km.MAKCU`, `echo=0`).

@@ -1,4 +1,4 @@
-"""Mouse-only high-level API. All validation here, framing in protocol."""
+"""Mouse-only high-level API. All validation via protocol.check_*, framing in protocol."""
 
 from __future__ import annotations
 
@@ -6,6 +6,12 @@ from .abc import Transport
 from .batch import BatchBuilder
 from .protocol import (
     button_method,
+    check_autorelease,
+    check_click,
+    check_mask_bit,
+    check_screen_size,
+    check_stream_mode,
+    check_xy,
     clamp_i16,
     mask_method,
     parse_button_event,
@@ -54,23 +60,18 @@ class Mouse:
         self._t.set("km.move_now", clamp_i16(dx), clamp_i16(dy))
 
     def moveto(self, x: int, y: int) -> None:
-        if not 0 <= x <= 32767:
-            raise ValueError(f"x out of range: {x}")
-        if not 0 <= y <= 32767:
-            raise ValueError(f"y out of range: {y}")
+        check_xy(x, y)
         self._t.set("km.moveto", x, y)
 
     def set_screen(self, width: int, height: int) -> None:
-        if not 1 <= width <= 32767:
-            raise ValueError(f"width out of range: {width}")
-        if not 1 <= height <= 32767:
-            raise ValueError(f"height out of range: {height}")
+        check_screen_size(width, height)
         self._t.set("km.screen", width, height)
 
     def wheel(self, delta: int) -> None:
         self._t.set("km.wheel", clamp_i16(delta))
 
     def silent(self, x: int, y: int) -> None:
+        check_xy(x, y)
         self._t.set("km.silent", x, y)
 
     def down(self, button: Button) -> None:
@@ -80,27 +81,20 @@ class Mouse:
         self._t.set(f"km.{button_method(button)}", 2 if silent_release else 0)
 
     def click(self, button: Button, count: int = 1, hold_ms: int | None = None) -> None:
-        if not 1 <= button.value <= 5:
-            raise ValueError("button out of range")
-        if not 1 <= count <= 255:
-            raise ValueError("count out of range")
+        check_click(button.value, count, hold_ms)
         if hold_ms is None:
             self._t.set("km.click", button.value, count)
         else:
-            if not 1 <= hold_ms <= 5000:
-                raise ValueError("hold_ms out of range")
             self._t.set("km.click", button.value, count, hold_ms)
 
     def set_move_mask(self, left: int, right: int, down: int, up: int) -> None:
         for v in (left, right, down, up):
-            if v not in (0, 1):
-                raise ValueError("mask must be 0/1")
+            check_mask_bit(v)
         self._t.set("km.move_mask", left, right, down, up)
 
     def set_wheel_mask(self, down: int, up: int) -> None:
-        for v in (down, up):
-            if v not in (0, 1):
-                raise ValueError("mask must be 0/1")
+        check_mask_bit(down)
+        check_mask_bit(up)
         self._t.set("km.wheel_mask", down, up)
 
     def set_button_mask(self, button: Button, enabled: bool) -> None:
@@ -120,8 +114,7 @@ class Mouse:
         return int(self._t.query("km.autorelease"))
 
     def set_autorelease(self, timeout_ms: int) -> None:
-        if not 0 <= timeout_ms <= 60000:
-            raise ValueError(f"autorelease out of range: {timeout_ms}")
+        check_autorelease(timeout_ms)
         self._t.set("km.autorelease", timeout_ms)
 
     def heartbeat(self) -> None:
@@ -132,8 +125,7 @@ class Mouse:
 
     # --- button stream (no queries in flight while polling) ---
     def start_button_stream(self, mode: int = 1) -> None:
-        if mode not in (1, 2, 3):
-            raise ValueError(f"stream mode out of range: {mode}")
+        check_stream_mode(mode)
         self._t.set("km.buttons", mode)
 
     def stop_button_stream(self) -> None:

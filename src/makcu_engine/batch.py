@@ -3,12 +3,23 @@
 Batch holds setters only: with echo off the firmware replies nothing on
 success, so a whole batch costs a single error-window wait. Queries are
 refused — their replies would interleave unpredictably.
+
+Covers the same setter set as Mouse, with the same validation.
 """
 
 from __future__ import annotations
 
 from .abc import Transport
-from .protocol import build_cmd, button_method, clamp_i16
+from .protocol import (
+    build_cmd,
+    button_method,
+    check_autorelease,
+    check_click,
+    check_mask_bit,
+    check_xy,
+    clamp_i16,
+    mask_method,
+)
 from .types import Button, LockTarget
 
 
@@ -32,6 +43,14 @@ class BatchBuilder:
     def move_now(self, dx: int, dy: int) -> BatchBuilder:
         return self._add("km.move_now", clamp_i16(dx), clamp_i16(dy))
 
+    def moveto(self, x: int, y: int) -> BatchBuilder:
+        check_xy(x, y)
+        return self._add("km.moveto", x, y)
+
+    def silent(self, x: int, y: int) -> BatchBuilder:
+        check_xy(x, y)
+        return self._add("km.silent", x, y)
+
     def wheel(self, delta: int) -> BatchBuilder:
         return self._add("km.wheel", clamp_i16(delta))
 
@@ -42,12 +61,33 @@ class BatchBuilder:
         return self._add(f"km.{button_method(button)}", 0)
 
     def click(self, button: Button, count: int = 1, hold_ms: int | None = None) -> BatchBuilder:
+        check_click(button.value, count, hold_ms)
         if hold_ms is None:
             return self._add("km.click", button.value, count)
         return self._add("km.click", button.value, count, hold_ms)
 
+    def set_move_mask(self, left: int, right: int, down: int, up: int) -> BatchBuilder:
+        for v in (left, right, down, up):
+            check_mask_bit(v)
+        return self._add("km.move_mask", left, right, down, up)
+
+    def set_wheel_mask(self, down: int, up: int) -> BatchBuilder:
+        check_mask_bit(down)
+        check_mask_bit(up)
+        return self._add("km.wheel_mask", down, up)
+
+    def set_button_mask(self, button: Button, enabled: bool) -> BatchBuilder:
+        return self._add(f"km.{mask_method(button)}", 1 if enabled else 0)
+
     def set_lock(self, target: LockTarget, enabled: bool) -> BatchBuilder:
         return self._add(f"km.lock_{target.value}", 1 if enabled else 0)
+
+    def set_autorelease(self, timeout_ms: int) -> BatchBuilder:
+        check_autorelease(timeout_ms)
+        return self._add("km.autorelease", timeout_ms)
+
+    def heartbeat(self) -> BatchBuilder:
+        return self._add("km.heartbeat")
 
     def execute(self) -> int:
         n = len(self)
