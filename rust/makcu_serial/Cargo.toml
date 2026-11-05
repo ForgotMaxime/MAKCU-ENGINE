@@ -8,5 +8,5 @@ name = "makcu_serial"
 path = "src/lib.rs"
 
 [dependencies]
-makcu_core = { path = "../makcu_core" }
+makcu_core.workspace = true
 serialport = "4"

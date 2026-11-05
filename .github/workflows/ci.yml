@@ -12,8 +12,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pyserial pytest ruff mypy
+      - run: pip install pyserial pytest pytest-cov ruff mypy
       - run: python -m pytest tests/ -v
+      - run: >-
+          python -m pytest tests/ -q
+          --cov=makcu_engine.protocol --cov=makcu_engine.types
+          --cov=makcu_engine.batch --cov=makcu_engine.mouse
+          --cov=makcu_engine.events --cov=makcu_engine.mock
+          --cov=makcu_engine.abc --cov=makcu_engine.errors
+          --cov-report=term --cov-fail-under=85
       - run: ruff check src tests examples
       - run: mypy src
 
@@ -30,3 +37,10 @@ jobs:
       - run: cargo test --workspace
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo fmt --check
+      - run: cargo publish -p makcu_core --dry-run
+      # NOTE: makcu_serial resolves makcu_core from the crates.io index,
+      # so its packaging can only be validated once makcu_core is published.
+      # The release workflow publishes core first and waits for the index.
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings

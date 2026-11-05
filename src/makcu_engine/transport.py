@@ -4,15 +4,19 @@ Port and baud are never hardcoded in the flow: use :meth:`detect` to pick
 ``(port, baud)`` at runtime, then open explicitly. :meth:`auto` is the
 one-call shortcut (detect + connect).
 
-Concurrency contract: queries reset the input buffer, so do not run queries
-while a button stream is being polled. Streams and queries are mutually
-exclusive on one port.
+Concurrency: by default one operation owns the port at a time (queries reset
+the input buffer). :meth:`start_event_loop` switches to full-duplex mode: a
+background reader demultiplexes prompt replies vs stream frames, so queries
+keep working while a button stream is active. Framed modes 1/2 only — bare
+mode 3 stays on the legacy poll path.
 """
 
 from __future__ import annotations
 
 import logging
+import queue
 import threading
+import time
 
 import serial
 import serial.tools.list_ports
@@ -33,11 +37,12 @@ def list_candidates() -> list[str]:
     scored: list[tuple[int, str]] = []
     for info in infos:
         name = info.device
+        desc = (info.description or "").upper()
         if info.vid == config.USB_VID and info.pid == config.USB_PID:
             score = 0
         elif info.vid is not None:
             score = 1
-        elif "USB" in (info.description or "").upper() or "SERIAL" in (info.description or "").upper():
+        elif "USB" in desc or "SERIAL" in desc:
             score = 2
         else:
             score = 3
@@ -46,27 +51,108 @@ def list_candidates() -> list[str]:
     return [name for _, name in scored]
 
 
+class _EventLoop:
+    """Background reader: prompt replies -> replies queue, stream lines -> events queue."""
+
+    def __init__(self, transport: MakcuTransport) -> None:
+        self._t = transport
+        self._stop = threading.Event()
+        self._replies: queue.Queue[bytes] = queue.Queue()
+        self._events: queue.Queue[bytes] = queue.Queue()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="makcu-events")
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self, timeout_s: float = 1.0) -> None:
+        self._stop.set()
+        self._thread.join(timeout_s)
+
+    def _run(self) -> None:
+        from .protocol import split_frames
+
+        t = self._t
+        with t._lock:
+            if t._ser is None:
+                return
+            prev = t._ser.timeout
+            t._ser.timeout = 0.01
+        try:
+            buf = bytearray()
+            while not self._stop.is_set():
+                with t._lock:
+                    if t._ser is None:
+                        break
+                    try:
+                        chunk = t._ser.read(256)
+                    except serial.SerialException:
+                        break
+                    if chunk:
+                        buf += chunk
+                if len(buf) > 65536:
+                    del buf[:-65536]
+                if chunk or buf:
+                    replies, events, rest = split_frames(bytes(buf))
+                    buf = bytearray(rest)
+                    for r in replies:
+                        self._replies.put(r)
+                    for e in events:
+                        self._events.put(e)
+                if not chunk:
+                    time.sleep(0.005)
+        finally:
+            with t._lock:
+                if t._ser is not None:
+                    t._ser.timeout = prev
+
+    def request(self, payload: bytes, timeout_s: float) -> bytes:
+        # No reset_input_buffer here: the reader owns the input stream.
+        # Empty return = silent setter (echo off), like the legacy path.
+        t = self._t
+        while True:
+            try:
+                self._replies.get_nowait()
+            except queue.Empty:
+                break
+        with t._lock:
+            if t._ser is None:
+                raise MakcuConnectionError("transport not connected")
+            t._ser.write(payload)
+            t._ser.flush()
+        try:
+            return self._replies.get(timeout=timeout_s)
+        except queue.Empty:
+            return b""
+
+
 class MakcuTransport:
+    """Exclusive serial transport with optional demux event loop."""
     def __init__(self, port: str, baudrate: int, timeout_s: float = config.TIMEOUT_S) -> None:
         self._port = port
         self._baudrate = baudrate
         self._timeout_s = timeout_s
         self._lock = threading.Lock()
+        self._req = threading.Lock()
         self._ser: serial.Serial | None = None
+        self._loop: _EventLoop | None = None
 
     @property
     def port(self) -> str:
+        """Port this transport was opened on."""
         return self._port
 
     @property
     def baudrate(self) -> int:
+        """Baud rate this transport runs at."""
         return self._baudrate
 
     @property
     def is_connected(self) -> bool:
+        """Whether the serial port is currently open."""
         return self._ser is not None
 
     def connect(self, retries: int = 10) -> None:
+        """Open the port exclusively (8N1, no flow control) with backoff retry."""
         last: Exception | None = None
         for attempt in range(retries):
             try:
@@ -88,12 +174,12 @@ class MakcuTransport:
                 return
             except serial.SerialException as e:
                 last = e
-                import time as _time
-
-                _time.sleep(0.2 * (attempt + 1))
+                time.sleep(0.2 * (attempt + 1))
         raise MakcuConnectionError(f"cannot open {self._port}@{self._baudrate}: {last}") from last
 
     def close(self) -> None:
+        """Stop the event loop if running, then close the port."""
+        self.stop_event_loop()
         if self._ser is not None:
             try:
                 self._ser.close()
@@ -110,8 +196,7 @@ class MakcuTransport:
 
     @classmethod
     def probe(cls, port: str, timeout_s: float = config.TIMEOUT_S) -> int:
-        import time as _time
-
+        """Baud-scan one port with km.version(); returns the working baud."""
         for baud in config.BAUDS:
             ser = None
             try:
@@ -130,12 +215,17 @@ class MakcuTransport:
                     try:
                         ser.close()
                     finally:
-                        _time.sleep(0.15)
+                        time.sleep(0.15)
         raise MakcuConnectionError(f"no MAKCU on {port}")
 
     @classmethod
-    def detect(cls, timeout_s: float = config.TIMEOUT_S) -> tuple[str, int]:
-        for port in list_candidates():
+    def detect(
+        cls,
+        timeout_s: float = config.TIMEOUT_S,
+        candidates: list[str] | None = None,
+    ) -> tuple[str, int]:
+        """First candidate that answers km.MAKCU, with its baud."""
+        for port in candidates if candidates is not None else list_candidates():
             try:
                 return port, cls.probe(port, timeout_s)
             except MakcuConnectionError:
@@ -143,24 +233,100 @@ class MakcuTransport:
         raise MakcuConnectionError("no MAKCU detected on any serial port")
 
     @classmethod
-    def auto(cls, timeout_s: float = config.TIMEOUT_S) -> MakcuTransport:
-        import time as _time
+    def detect_all(
+        cls,
+        timeout_s: float = config.TIMEOUT_S,
+        candidates: list[str] | None = None,
+    ) -> list[tuple[str, int]]:
+        """Every candidate that answers, for multi-device setups."""
+        found: list[tuple[str, int]] = []
+        for port in candidates if candidates is not None else list_candidates():
+            try:
+                found.append((port, cls.probe(port, timeout_s)))
+            except MakcuConnectionError:
+                continue
+        return found
 
+    @classmethod
+    def wait_for_device(
+        cls,
+        timeout_s: float = 30.0,
+        poll_s: float = 1.0,
+        candidates: list[str] | None = None,
+    ) -> tuple[str, int]:
+        """Block until a MAKCU appears (hot-plug). Raises MakcuTimeoutError."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                return cls.detect(config.TIMEOUT_S, candidates)
+            except MakcuConnectionError:
+                if time.monotonic() >= deadline:
+                    raise MakcuTimeoutError("no MAKCU appeared in time") from None
+                time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+
+    @classmethod
+    def auto(cls, timeout_s: float = config.TIMEOUT_S) -> MakcuTransport:
+        """Detect a MAKCU, then open it. One-call shortcut."""
         port, baud = cls.detect(timeout_s)
-        _time.sleep(0.3)
+        time.sleep(0.3)
         t = cls(port, baud, timeout_s)
         t.connect()
         return t
 
-    def _exchange(self, payload: bytes) -> bytes:
+    def start_event_loop(self) -> None:
+        """Start the background demux reader (framed modes 1/2).
+
+        While running, queries and stream polls share the port safely:
+        replies go to the pending request, stream lines to the event queue.
+        """
         if self._ser is None:
             raise MakcuConnectionError("transport not connected")
-        logger.debug("TX %r", payload)
+        if self._loop is not None:
+            return
         with self._lock:
             self._ser.reset_input_buffer()
-            self._ser.write(payload)
-            self._ser.flush()
-            raw: bytes = self._ser.read_until(config.PROMPT)
+        loop = _EventLoop(self)
+        self._loop = loop
+        try:
+            loop.start()
+        except Exception:
+            self._loop = None
+            raise
+
+    def stop_event_loop(self, timeout_s: float = 1.0) -> None:
+        """Stop the background demux reader."""
+        loop, self._loop = self._loop, None
+        if loop is not None:
+            loop.stop(timeout_s)
+
+    def event_loop_running(self) -> bool:
+        """Whether the demux reader is active."""
+        return self._loop is not None
+
+    def poll_event(self, timeout_s: float = 0.5) -> bytes:
+        """Next queued stream frame; only with the event loop running."""
+        loop = self._loop
+        if loop is None:
+            raise MakcuProtocolError("event loop not running")
+        try:
+            return loop._events.get(timeout=timeout_s)
+        except queue.Empty:
+            raise MakcuTimeoutError("no event") from None
+
+    def _exchange(self, payload: bytes) -> bytes:
+        raw: bytes
+        if self._loop is not None:
+            with self._req:
+                raw = self._loop.request(payload, self._timeout_s)
+        else:
+            if self._ser is None:
+                raise MakcuConnectionError("transport not connected")
+            logger.debug("TX %r", payload)
+            with self._lock:
+                self._ser.reset_input_buffer()
+                self._ser.write(payload)
+                self._ser.flush()
+                raw = self._ser.read_until(config.PROMPT)
         logger.debug("RX %r", raw)
         if not raw:
             raise MakcuTimeoutError("no reply (prompt >>> missing)")
@@ -169,6 +335,7 @@ class MakcuTransport:
         return raw
 
     def query(self, name: str, *args: int | str, retries: int = 1) -> str:
+        """Blocking query with one retry on timeout; returns stripped payload."""
         last: MakcuTimeoutError = MakcuTimeoutError("no reply")
         for _ in range(max(retries, 0) + 1):
             try:
@@ -183,26 +350,34 @@ class MakcuTransport:
         return strip_prompt(raw)
 
     def set(self, name: str, *args: int | str, error_window_s: float = 0.08) -> None:
-        self.send_raw(build_cmd(name, *args), error_window_s)
+        """Silent setter; the command name is attached to protocol errors."""
+        try:
+            self.send_raw(build_cmd(name, *args), error_window_s)
+        except MakcuProtocolError as e:
+            raise MakcuProtocolError(f"{name} failed: {e}") from e
 
     def send_raw(self, data: bytes, error_window_s: float = 0.08) -> None:
         """Write pre-framed bytes; single ERR-window read. Used by Batch."""
-        if self._ser is None:
-            raise MakcuConnectionError("transport not connected")
         logger.debug("TX %r", data)
-        with self._lock:
-            self._ser.reset_input_buffer()
-            self._ser.write(data)
-            self._ser.flush()
-            prev = self._ser.timeout
-            try:
-                self._ser.timeout = error_window_s
-                raw = self._ser.read_until(config.PROMPT)
-            finally:
-                self._ser.timeout = prev
+        if self._loop is not None:
+            with self._req:
+                raw = self._loop.request(data, error_window_s)
+        else:
+            if self._ser is None:
+                raise MakcuConnectionError("transport not connected")
+            with self._lock:
+                self._ser.reset_input_buffer()
+                self._ser.write(data)
+                self._ser.flush()
+                prev = self._ser.timeout
+                try:
+                    self._ser.timeout = error_window_s
+                    raw = self._ser.read_until(config.PROMPT)
+                finally:
+                    self._ser.timeout = prev
         logger.debug("RX %r", raw)
         if b"ERR" in raw:
-            raise MakcuProtocolError(f"rejected: {raw!r}")
+            raise MakcuProtocolError(f"device ERR: {raw!r}")
 
     def read_line(self, timeout_s: float = 0.5) -> bytes:
         """Read one CRLF-terminated frame without touching the buffer.
@@ -223,14 +398,32 @@ class MakcuTransport:
             raise MakcuTimeoutError("no stream frame")
         return raw
 
-    def reconnect(self) -> None:
-        import time as _time
+    def read_exact(self, n: int, timeout_s: float = 0.5) -> bytes:
+        """Read exactly n bytes without touching the buffer (mode-3 streams)."""
+        if self._ser is None:
+            raise MakcuConnectionError("transport not connected")
+        if n <= 0:
+            raise MakcuProtocolError(f"read_exact n={n}")
+        with self._lock:
+            prev = self._ser.timeout
+            try:
+                self._ser.timeout = timeout_s
+                raw: bytes = self._ser.read(n)
+            finally:
+                self._ser.timeout = prev
+        logger.debug("STREAM %r", raw)
+        if len(raw) < n:
+            raise MakcuTimeoutError("short stream read")
+        return raw
 
+    def reconnect(self) -> None:
+        """Close, cool down, and reopen the port."""
         self.close()
-        _time.sleep(0.3)
+        time.sleep(0.3)
         self.connect()
 
     def ensure_connected(self) -> None:
+        """Ping and reconnect once if the link is down."""
         try:
             self.query("km.echo")
             return
@@ -240,6 +433,7 @@ class MakcuTransport:
         self.query("km.echo")
 
     def fire_and_forget(self, name: str, *args: int | str) -> None:
+        """Write without waiting for anything back."""
         if self._ser is None:
             raise MakcuConnectionError("transport not connected")
         with self._lock:

@@ -5,6 +5,7 @@ from enum import Enum, IntEnum
 
 
 class Button(IntEnum):
+    """Physical mouse buttons (1-5, as used by km.click)."""
     LEFT = 1
     RIGHT = 2
     MIDDLE = 3
@@ -17,6 +18,7 @@ class Button(IntEnum):
 
 
 class ButtonOwnership(IntEnum):
+    """Physical vs injected button ownership (km.left & co)."""
     NONE = 0
     PHYSICAL = 1
     INJECTED = 2
@@ -25,6 +27,7 @@ class ButtonOwnership(IntEnum):
 
 @dataclass(frozen=True)
 class DeviceInfo:
+    """Route and report periods from km.device()."""
     route: str
     mouse_period: str
     keyboard_period: str
@@ -33,17 +36,20 @@ class DeviceInfo:
 
 @dataclass(frozen=True)
 class Screen:
+    """Virtual screen size from km.screen()."""
     width: int
     height: int
 
 
 @dataclass(frozen=True)
 class Position:
+    """Tracked pointer position from km.getpos()."""
     x: int
     y: int
 
 
 class LockTarget(str, Enum):
+    """Lockable buttons and axes (km.lock_* targets)."""
     ML = "ml"
     MR = "mr"
     MM = "mm"

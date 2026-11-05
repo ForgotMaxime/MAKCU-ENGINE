@@ -1,6 +1,50 @@
 # Changelog
 
-## 0.3.1 (Python) / 0.2.2 (Rust) — 2026-11-05
+## 0.5.0 (Python) / 0.4.0 (Rust) — 2026-11-05
+
+Completeness pass against official docs, the reference `makcu_api` and
+hardware probes:
+- Echo-aware replies: `strip_prompt` returns the last line, so queries
+  parse identically with echo on or off (hardware-verified both ways).
+- Byte-precise demux: `split_frames` gives stream frames priority only
+  when shaped like one; echo lines stay glued to their reply. Interleaved
+  frame+reply now splits correctly (was: swallowed into the reply).
+- `button_stream_state()` (query `km.buttons()` → `"1"`), hardware-verified.
+- Side buttons use the `ms1`/`ms2` wire names (like lock targets and the
+  reference lib); both names accepted by the firmware, verified on device.
+- `move_smooth` / `drag` scripted motion (firmware still interpolates
+  each step), `wait_for_device` / `detect_all` discovery helpers.
+- Packaging hardened: workspace-dependency for the serial crate (path-only
+  broke `cargo publish`), PyPI long-description wired, `twine check` +
+  both `cargo publish --dry-run` green locally; release workflow publishes
+  core first then serial after index propagation.
+- Full docstrings both stacks (`ruff D100-D103`, rustdoc `missing-docs`
+  deny), 85% core-coverage gate green at 96%, advanced examples
+  (`smooth.py`, `monitor.py`).
+
+## 0.4.0 (Python) / 0.3.0 (Rust) — 2026-11-05
+
+- Full-duplex event loop: background reader demultiplexes prompt replies
+  vs stream lines (`split_frames`); queries keep working while a button
+  stream is active (`start/stop_event_loop`, `poll_event`). Modes 1/2 only;
+  bare mode 3 stays on the legacy poll path. Deadlock found & fixed during
+  HW validation (reader must not hold the port lock across reads);
+  `Drop` stops the loop. Hardware-verified incl. ERR-window timing.
+- `ButtonMonitor`: pump thread, change callbacks, drain queue.
+- Hot-plug: `wait_for_device()`, `detect_all()` for multi-device setups.
+- `wait_idle(timeout)`: block until injected movement drains.
+- `set_screen()` requires `confirm=True` (moves live tracking origin).
+- Docs: `docs/protocol.md`, rustdoc `missing_docs` enforced, pydocstyle
+  (`D100-D103`) enforced, `cargo doc -D warnings` in CI.
+- CI: core coverage gate 85% (currently 96%), release workflow
+  (tag-triggered; PyPI trusted publishing, crates.io dry-run).
+
+Top-3 demandés, vérifiés hardware des deux côtés :
+- Erreurs contextuelles : `set()` préfixe le nom de commande, `BatchBuilder.execute()`
+  liste les commandes du batch en cas de rejet.
+- `wait_idle(timeout)` : attend la fin des mouvements injectés (`km.moving` poll).
+- Stream mode 3 : `poll_button_event()` lit le bare byte via `read_exact`
+  (mode suivi dans `Mouse`, erreur explicite si poll sans `start`).
 
 Audit fixes (all six points verified against code, both stacks):
 - Rust `send_raw`: single critical section (no lock drop between write and

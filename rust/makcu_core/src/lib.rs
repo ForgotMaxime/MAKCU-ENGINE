@@ -1,5 +1,10 @@
+#![warn(missing_docs)]
+//! MAKCU V4 mouse-only core: zero-dependency protocol, types and
+//! transport-agnostic mouse API. Pair with `makcu_serial` for hardware I/O.
+
 pub mod batch;
 pub mod error;
+pub mod events;
 pub mod mock;
 pub mod mouse;
 pub mod protocol;

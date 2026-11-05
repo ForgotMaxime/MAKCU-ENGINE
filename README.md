@@ -15,7 +15,10 @@ Target firmware: **V4 official (validated against V4.108-class behavior)**. Baud
 - Query path blocks on prompt; mutation path is silent-aware (see contract)
 - Mouse API: relative/absolute moves, buttons, wheel, click scheduler, masks, locks, virtual screen
 - Abstractions: `Transport` trait/protocol for dependency injection
-- Testing: pure unit tests + mock transport + hardware-gated integration (read-only + net-zero moves, no clicks)
+- Testing: pure unit tests + mock transport + hardware-gated integration (read-only + net-zero moves, no clicks) + 85% core coverage gate (measured 96%)
+- Full-duplex streaming: background demux reader, `ButtonMonitor` callbacks, hot-plug helpers (`wait_for_device`, `detect_all`)
+
+Full contract: [`docs/protocol.md`](docs/protocol.md).
 
 Non-goals: binary protocol, keyboard/controller injection, device flashing, GUI.
 
@@ -35,8 +38,14 @@ CB/
   tests/
     test_protocol.py       # pure, no hardware
     test_mouse_mock.py     # MockTransport, no hardware
-    test_integration.py    # COM4-gated, safe probes only
-  examples/check_mouse.py  # smoke check against real hardware
+    test_integration.py    # hardware-gated, safe probes only
+    test_events.py         # stream/loop/monitor (mock) + loop coexistence (HW)
+    test_packaging.py      # version single-source checks
+  examples/
+    check_mouse.py         # smoke check against real hardware
+    benchmark.py           # round-trip / fire-and-forget / batch timings
+    smooth.py              # smooth moves + drag square (returns home)
+    monitor.py             # interactive button stream + monitor (20 s)
   rust/
     makcu_core/            # zero-dependency port: error/types/protocol/transport/mock/mouse
     makcu_serial/          # serial Transport impl (serialport 4) + hardware example
@@ -65,10 +74,12 @@ Software:
 Discovered against hardware, encoded in both implementations:
 
 1. **Framing:** host sends `km.<name>(<csv>)\r`. Device replies `<result>\r\n>>> `. The `km.` prefix on RX is optional; TX always keeps it for compatibility.
-2. **Echo off (`km.echo(0)`):** queries return `<result>\r\n>>> `. Mutations return **zero bytes** on success. Do not block on prompt for setters.
+2. **Echo off (`km.echo(0)`):** queries return `<result>\r\n>>> `. Mutations return **zero bytes** on success. Do not block on prompt for setters. With echo on, an echo line precedes the result — parsers take the last line, so both modes decode identically.
 3. **Error signaling:** rejected commands return `ERR` (echoed input + `\r\nERR\r\n>>> ` even with echo off). Setters use an 80 ms error window: empty → `Ok`, `ERR` → `MakcuProtocolError`.
 4. **Discovery:** probe `4_000_000` then `115_200`. Send `km.version()\r`, accept if reply contains `km.MAKCU`. Consume the trailing prompt before streaming.
 5. **Timing:** virtual screen defaults to `1920x1080`. `getpos` is an estimate from accepted host reports. Prefer `4M` for move+click combos (17 B ≈ 42 µs at 4M vs 1.48 ms at 115200, over the 1 ms USB poll).
+6. **Side buttons:** injected as `km.ms1`/`km.ms2` (like lock targets and the reference `makcu_api`); the firmware also accepts `km.side1`/`km.side2`. Masks stay `side1_mask`/`side2_mask` (no `ms*_mask` variants documented).
+7. **Demux:** a CRLF line before the prompt is a stream event only if shaped `km.` + mask (< 0x20) + CRLF; echo text stays glued to its reply. Bare bytes < 0x20 are mode-3 masks.
 
 ## Python Engine
 
@@ -103,9 +114,11 @@ candidates = list_candidates()                # ordered port names
 with MakcuTransport(port, baud) as transport: ...
 ```
 
-API surface (`Mouse`): `version/device/echo/set_echo/getpos/screen/moving/button_state/lock_state/move/move_now/moveto/set_screen/wheel/silent/down/up/click/set_move_mask/set_wheel_mask/set_button_mask/set_lock/move_ff/batch/autorelease/set_autorelease/heartbeat/api_version/start_button_stream/stop_button_stream/poll_button_event`.
+API surface (`Mouse`): `version/device/echo/set_echo/getpos/screen/moving/wait_idle/button_state/lock_state/move/move_smooth/drag/move_now/moveto/set_screen[confirm]/wheel/silent/down/up/click/set_move_mask/set_wheel_mask/set_button_mask/set_lock/move_ff/batch/autorelease/set_autorelease/heartbeat/api_version/start_button_stream/button_stream_state/stop_button_stream/poll_button_event`. Monitors: `ButtonMonitor` (callbacks + drain).
 
-Transport: `detect()` → `(port, baud)`, `auto()` (detect + connect), `open(port, baud)`, `probe(port)`, `reconnect()`, `ensure_connected()`, `send_raw()`, `read_line()`. Queries retry once on timeout; setters use a single 80 ms ERR window. Debug logging via `logging.getLogger("makcu_engine")`.
+Transport: `detect()` → `(port, baud)`, `detect_all()`, `wait_for_device()` (hot-plug), `auto()` (detect + connect), `open(port, baud)`, `probe(port)`, `reconnect()`, `ensure_connected()`, `send_raw()`, `read_line()`, `read_exact()`, `start/stop_event_loop()`, `poll_event()`. Queries retry once on timeout; setters wrap the command name into protocol errors (`batch [...] failed`, `km.move failed`); single 80 ms ERR window. Debug logging via `logging.getLogger("makcu_engine")`.
+
+Transport: `detect()` → `(port, baud)`, `auto()` (detect + connect), `open(port, baud)`, `probe(port)`, `reconnect()`, `ensure_connected()`, `send_raw()`, `read_line()`, `read_exact()`. Queries retry once on timeout; setters wrap the command name into protocol errors (`batch [...] failed`, `km.move failed`); single 80 ms ERR window. Debug logging via `logging.getLogger("makcu_engine")`.
 
 Batching (one write, one ERR window — same setter set and validation as `Mouse`):
 
@@ -120,12 +133,28 @@ with MakcuTransport.auto() as t:
     )
 ```
 
-Button stream (no queries in flight while polling):
+Button stream, two paths. Without the loop (no concurrent queries):
 
 ```python
-mouse.start_button_stream(1)
-mask = mouse.poll_button_event(0.5)  # bitmask int
+mouse.start_button_stream(3)
+mask = mouse.poll_button_event(0.5)
 mouse.stop_button_stream()
+```
+
+With the loop, polls and queries interleave safely (framed modes 1/2):
+
+```python
+with MakcuTransport.auto() as t:
+    t.start_event_loop()
+    mouse = Mouse(t)
+    mouse.start_button_stream(1)
+    print(mouse.version())          # works while streaming
+    mon = ButtonMonitor(mouse)
+    mon.on_change(lambda m: print(f"buttons={m:08b}"))
+    mon.start(1)
+    ...
+    mon.stop()
+    t.stop_event_loop()
 ```
 
 Measured on `COM4 @ 4M` (`examples/benchmark.py`): query ~0.21 ms avg, 100×
@@ -162,7 +191,7 @@ Lower level: `MakcuTransport::list_candidates()` (CH343 VID/PID first), `MakcuTr
 
 Crates:
 
-- `makcu_core` — zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`), `BatchBuilder`, `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types` with shared `check_*` validators. 11 unit tests (+ 3 hardware-gated, ignored in CI).
+- `makcu_core` — zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`), `BatchBuilder`, `ButtonMonitor`, `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types` with shared `check_*` validators. 18 unit tests (+ 7 hardware-gated, ignored in CI).
 - `makcu_serial` — `Transport for MakcuTransport` over `serialport`. Interior mutability via `Mutex`, `read_until` with 10 ms polls under caller deadline (never exceeds the ERR window), single-critical-section `send_raw`, open retry with backoff.
 
 ## Hardware Validation
@@ -174,10 +203,10 @@ Crates:
 | `move(+2,0)+move(-2,0)` net-zero | pass | pass | position unchanged |
 | batch full-set + `autorelease` roundtrip | pass (unit + HW) | pass (unit + HW) | firmware answers `autorelease` |
 | rejected-setter ERR window | unit | unit + HW-timed < 500 ms | `hw_setter_error_window_fast` (ignored) |
-| Unit (framing, parsing, validation, mock flow, batch, stream) | 14 passed* | 11 passed | — |
+| Unit (framing, parsing, validation, mock flow, batch, stream, monitor, smooth/drag, packaging) | 33 passed* | 18 passed | + 7 HW Rust (ignored) |
 | Lints | `ruff + mypy --strict` | `clippy -D warnings`, `fmt` | clean |
 
-\* 19 with the 3 hardware-gated integration tests and 2 packaging tests.
+\* 40 with 7 hardware-gated tests (6 integration + 1 event-loop) and 2 packaging tests.
 
 Integration tests never click, never scroll, and never change persistent settings. Only `COM4` is touched; `COM3` (virtual, not ready) and `COM5/COM6` (ESP32-S3, `Unknown`) are left alone.
 
@@ -186,7 +215,7 @@ Integration tests never click, never scroll, and never change persistent setting
 | Python | Rust | Note |
 |---|---|---|
 | `Mouse.move(dx, dy)` | `Mouse::move_rel(dx, dy)` | `move` is a keyword in Rust |
-| `abc.Transport` (Protocol) | `makcu_core::Transport` (trait) | `query/set/fire_and_forget/send_raw/read_line` |
+| `abc.Transport` (Protocol) | `makcu_core::Transport` (trait) | `query/set/fire_and_forget/send_raw/read_line/read_exact/start/stop_event_loop/running/poll_event` |
 | `MockTransport` | `makcu_core::MockTransport` | same canned replies, `sent()` log, stream-frame queue |
 | `MakcuProtocolError` (+ `ValueError`) | `MakcuError::{Protocol, InvalidArgument}` | validation/parsing errors coherent per language idiom |
 | `protocol.check_*` validators | `protocol::check_*` validators | single definition used by `Mouse` and `BatchBuilder` |

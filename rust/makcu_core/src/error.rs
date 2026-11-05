@@ -1,13 +1,21 @@
+//! Typed errors for every MAKCU failure mode.
+
 use std::fmt;
 
+/// All failures the driver can report.
 #[derive(Debug)]
 pub enum MakcuError {
+    /// Serial port unavailable or I/O failure (holds the OS message).
     Connection(String),
+    /// No reply within the deadline.
     Timeout,
+    /// Framing, prompt or validation failure (holds details).
     Protocol(String),
+    /// Caller-side argument out of range (holds details).
     InvalidArgument(String),
 }
 
+/// `Result` alias used across both crates.
 pub type Result<T> = std::result::Result<T, MakcuError>;
 
 impl fmt::Display for MakcuError {

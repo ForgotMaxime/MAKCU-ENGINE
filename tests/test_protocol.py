@@ -15,9 +15,16 @@ def test_strip_prompt():
     assert protocol.strip_prompt(b"km.screen(1920,1080)\r\n>>> ") == "km.screen(1920,1080)"
 
 
+def test_strip_prompt_echo_on():
+    assert protocol.strip_prompt(b"km.left()\r\n0\r\n>>> ") == "0"
+    assert protocol.strip_prompt(b"km.version()\r\nkm.MAKCU\r\n>>> ") == "km.MAKCU"
+    assert protocol.strip_prompt(b"km.move(2,0)\r\n>>> ") == "km.move(2,0)"
+
+
 def test_parse_device():
     d = protocol.parse_device("R:MK;M:16uf;K:8uf;C:0uf")
-    assert (d.route, d.mouse_period, d.keyboard_period, d.controller_period) == ("MK", "16uf", "8uf", "0uf")
+    assert (d.route, d.mouse_period) == ("MK", "16uf")
+    assert (d.keyboard_period, d.controller_period) == ("8uf", "0uf")
 
 
 def test_parse_screen_getpos():
@@ -39,7 +46,8 @@ def test_clamp_and_buttons():
 def test_button_aliases():
     assert Button.MS1 is Button.SIDE1
     assert Button.MS2 is Button.SIDE2
-    assert protocol.button_method(Button.MS1) == "side1"
+    assert protocol.button_method(Button.MS1) == "ms1"
+    assert protocol.mask_method(Button.MS2) == "side2_mask"
 
 
 def test_button_event():
@@ -88,3 +96,30 @@ def test_shared_validators():
             raise AssertionError("should raise")
         except MakcuProtocolError:
             pass
+
+
+def test_split_frames():
+    replies, events, rest = protocol.split_frames(b"km.MAKCU\r\n>>> ")
+    assert replies == [b"km.MAKCU\r\n>>> "] and events == [] and rest == b""
+    replies, events, rest = protocol.split_frames(b"km.\x03\r\n")
+    assert replies == [] and events == [b"km.\x03\r\n"] and rest == b""
+    replies, events, rest = protocol.split_frames(b"0\r\n>>> km.\x01\r\nkm.MA")
+    assert replies == [b"0\r\n>>> "]
+    assert events == [b"km.\x01\r\n"]
+    assert rest == b"km.MA"
+    replies, events, rest = protocol.split_frames(b"\x05")
+    assert replies == [] and events == [b"\x05"] and rest == b""
+    # echo line before prompt is part of the reply, never an event
+    replies, events, rest = protocol.split_frames(b"km.left(1)\r\n>>> ")
+    assert replies == [b"km.left(1)\r\n>>> "] and events == [] and rest == b""
+    # interleaved event before reply: frame first, then the reply
+    replies, events, rest = protocol.split_frames(b"km.\x01\r\n0\r\n>>> ")
+    assert replies == [b"0\r\n>>> "]
+    assert events == [b"km.\x01\r\n"]
+    assert rest == b""
+    # interleaved echo + event + reply
+    buf = b"km.left(1)\r\n>>> " + b"km.\x05\r\n"
+    replies, events, rest = protocol.split_frames(buf)
+    assert replies == [b"km.left(1)\r\n>>> "]
+    assert events == [b"km.\x05\r\n"]
+    assert rest == b""
