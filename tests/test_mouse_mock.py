@@ -205,11 +205,14 @@ def test_monitor_start_stop_with_mock():
     mon = ButtonMonitor(m)
     seen: list[int] = []
     mon.on_change(seen.append)
-    mon.start(1)
+    # No thread here: pump_once is deterministic without start().
+    m.start_button_stream(1)
     t.push_stream_frame(b"km.\x04\r\n")
     assert mon.pump_once(0.2) == 0x04
     assert mon.drain() == [0x04]
-    mon.stop()
+    assert seen == [0x04]
+    m.stop_button_stream()
+    assert "km.buttons(1)" in t.sent
     assert "km.buttons(0)" in t.sent
 
 
