@@ -57,9 +57,9 @@ Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis
 - [ ] `click(hold_ms=0)` : vérifier passthrough random-firmware 35–75 ms (spec binaire CLICK) ; doc + test, sinon verdict.
 
 ### P1 — utile
-- [ ] Trous coverage listés : `batch` click+hold/`set_lock`, `events` stop-timeout, mock min/max, `mouse` step_s<0/mode-3 guard, `protocol` non-ascii/empty/`h`/CRLF, timeouts stream, jitter/validation `human_like`, `drag_abs` finally, `init()` partiel, `double_click` SIDE, `get_recent_lines(n>len)` — un test nommé par ligne ou `coverage: exclude` justifié.
-- [ ] `tests/test_transport_unit.py` avec `FakeSerial` in-memory : query/strip, fenêtre ERR (dont `error_window_s=0`), `no_wait`, stats/ring/profile, `reconnect` — sans hardware.
-- [ ] `ButtonMonitor` : `_run` survit à une frame malformée (`parse_button_event` lève → catch+compte+continue), `drain()` sous lock, `stop()` + alive-check, accesseur santé. Test frame poubelle puis re-`start()`.
+- [x] Trous coverage listés — `tests/test_coverage_gaps.py` (19 tests nommés) + `test_transport_unit.py` (8 tests, serial mocké) — mergé (`feat/py-p1-tests`).
+- [x] `tests/test_transport_unit.py` avec serial mocké in-memory : query/strip, fenêtre ERR (dont `error_window_s=0`), `no_wait`, stats/ring/profile, `reconnect` — sans hardware — mergé.
+- [x] `ButtonMonitor` : `_run` survit aux frames malformées (compte + continue), `drain()` sous lock, `stop()` + alive-check, accesseurs `is_running`/`pump_errors` — mergé.
 - [ ] Convention messages d'erreur unifiée (`MakcuProtocolError("<param>…")`) + note `protocol.md` + tests de préfixes, les deux langages (`check_*` style drift Rust inclus).
 - [ ] `click_human_like(rng=None)` injectable, défaut global (parité sampler Rust) ; tests existants inchangés.
 - [ ] Petits manques : alias `scroll`, `udp_relay` 5 boutons, recettes `set_lock`/exemple doc, doc `is_locked` vs `is_pressed`, alias `enable_button_monitoring` — implémenter + test ou rejeter explicitement.
@@ -79,7 +79,7 @@ Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis
 ### P2 — hygiène / dette
 - [ ] `ruff format --check` en CI ou décision "non enforced" (10 fichiers dérivent ; asymétrie avec `cargo fmt` enforced).
 - [ ] `mypy tests examples` ou typer `parse_datagram`/`apply_action` (union `Action`) — `udp_relay` force des `type: ignore`.
-- [ ] `macros.py` : `to_rel_deltas([])` → `ValueError`, validation coords au load, `scale_xy` rename (shadow core `scale_coordinates`), type `Event`.
+- [x] `macros.py` edges : `to_rel_deltas([])` → `ValueError`, validation coords au load, `scale_xy` rename, type `Event` — mergé (+ tests). → `ValueError`, validation coords au load, `scale_xy` rename (shadow core `scale_coordinates`), type `Event`.
 - [ ] `__init__.py` : exporter `CLICK_PROFILES`, `CoordSpace` (+ test de surface packaging).
 - [ ] Rust : `MakcuError: PartialEq/Eq/Clone`, jitter-0 `sent()` pin, `list_candidates` tier desc-fallback, note `fire_and_forget` Tx, organisation tests inline vs `tests/` (décider + noter).
 - [ ] `move_now` sémantique V4.097+ (next free USB report) dans `protocol.md` ; re-mesure timings polling 1 ms avec § Hardware.
