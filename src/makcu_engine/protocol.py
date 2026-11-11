@@ -107,6 +107,16 @@ def check_click(button_value: int, count: int, hold_ms: int | None) -> None:
         raise MakcuProtocolError(f"hold_ms out of range: {hold_ms}")
 
 
+def check_bezier(segments: int, ctrl_x: int, ctrl_y: int) -> None:
+    """Validate firmware-side bezier args: segments 1..=255, control i16."""
+    if not 1 <= segments <= 255:
+        raise MakcuProtocolError(f"segments out of range: {segments}")
+    if not -32768 <= ctrl_x <= 32767:
+        raise MakcuProtocolError(f"ctrl_x out of i16 range: {ctrl_x}")
+    if not -32768 <= ctrl_y <= 32767:
+        raise MakcuProtocolError(f"ctrl_y out of i16 range: {ctrl_y}")
+
+
 def check_stream_mode(mode: int) -> None:
     """Validate a button-stream mode (1..=3)."""
     if mode not in (1, 2, 3):
