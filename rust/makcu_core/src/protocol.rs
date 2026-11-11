@@ -307,7 +307,12 @@ mod tests {
 
     #[test]
     fn clamp() {
-        assert!(clamp_i16(40000).is_err());
+        assert_eq!(
+            clamp_i16(40000),
+            Err(MakcuError::InvalidArgument(
+                "out of i16 range: 40000".into()
+            ))
+        );
         assert_eq!(clamp_i16(-32768).unwrap(), -32768);
     }
 

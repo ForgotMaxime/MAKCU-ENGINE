@@ -1,11 +1,16 @@
 //! Serial transport over the management COM port.
 //!
 //! [`MakcuTransport`] mirrors the Python `MakcuTransport` observability
-//! surface: I/O counters ([`Transport::get_stats`](makcu_core::Transport::get_stats)),
+//! surface: I/O counters ([`Transport::get_stats`]),
 //! a bounded recent-frame ring, a nestable `no_wait` flag honored by
 //! `set()`, a `reconnects` counter, and connection-change callbacks.
+//!
+//! Per-command profiling (`enable_profiling` / `get_profile` /
+//! `reset_profile` / `disable_profiling`) mirrors the Python table
+//! (`count`/`total_s`/`avg_ms`/`min_ms`/`max_ms` per command); off by
+//! default with a single enabled-check per `query`/`set` call.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Condvar, Mutex,
@@ -15,7 +20,7 @@ use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use std::io::{Read, Write};
 
-use makcu_core::transport::{ConnectionCallback, TransportStats, RECENT_CAPACITY};
+use makcu_core::transport::{ConnectionCallback, ProfileEntry, TransportStats, RECENT_CAPACITY};
 use makcu_core::{protocol::build_cmd, MakcuError, Result, Transport};
 
 /// Baud probe order: 4M first, 115200 fallback.
@@ -50,6 +55,21 @@ struct Obs {
     recent: VecDeque<String>,
     /// Nesting depth of `no_wait` scopes.
     no_wait_depth: usize,
+    /// Per-command timing table; `None` while profiling is disabled.
+    profile: Option<HashMap<String, ProfileData>>,
+}
+
+/// One row of the per-command timing table.
+#[derive(Debug, Clone, Default)]
+struct ProfileData {
+    /// Number of recorded calls.
+    count: u64,
+    /// Accumulated call time.
+    total: Duration,
+    /// Fastest call.
+    min: Duration,
+    /// Slowest call.
+    max: Duration,
 }
 
 /// Push one line onto a bounded ring, evicting the oldest on overflow.
@@ -267,6 +287,13 @@ impl MakcuTransport {
     }
 
     /// Serial ports ordered: CH343 match, other USB, then rest.
+    ///
+    /// Intentional deviation from the Python `list_candidates`: Python
+    /// inserts a third tier for ports whose *description* mentions USB or
+    /// SERIAL. The `serialport` crate exposes no description field
+    /// (`SerialPortInfo` carries only name + type + USB identifiers), so
+    /// there is nothing to match on — non-USB ports fall through to the
+    /// catch-all tier directly.
     pub fn list_candidates() -> Vec<String> {
         let ports = serialport::available_ports().unwrap_or_default();
         let mut scored: Vec<(u8, String)> = Vec::new();
@@ -577,28 +604,38 @@ impl Drop for MakcuTransport {
 
 impl Transport for MakcuTransport {
     fn query(&self, name: &str, args: &[&str]) -> Result<String> {
-        let start = Instant::now();
-        let payload = build_cmd(name, args);
-        let raw = match self.exchange_query(&payload) {
-            Err(MakcuError::Timeout) => self.exchange_query(&payload)?,
-            other => other?,
-        };
-        let out = match makcu_core::protocol::strip_prompt(&raw) {
-            Ok(s) => s,
-            Err(e) => {
-                self.note_error(&e);
-                return Err(e);
-            }
-        };
-        self.note_rtt(start.elapsed());
-        Ok(out)
+        let prof_on = self.profiling_enabled();
+        let t_prof = if prof_on { Some(Instant::now()) } else { None };
+        let res: Result<String> = (|| {
+            let start = Instant::now();
+            let payload = build_cmd(name, args);
+            let raw = match self.exchange_query(&payload) {
+                Err(MakcuError::Timeout) => self.exchange_query(&payload)?,
+                other => other?,
+            };
+            let out = match makcu_core::protocol::strip_prompt(&raw) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.note_error(&e);
+                    return Err(e);
+                }
+            };
+            self.note_rtt(start.elapsed());
+            Ok(out)
+        })();
+        if let Some(t0) = t_prof {
+            self.record_profile(name, t0.elapsed());
+        }
+        res
     }
 
     fn set(&self, name: &str, args: &[&str]) -> Result<()> {
         if self.is_no_wait() {
             return self.fire_and_forget(name, args);
         }
-        self.send_raw(&build_cmd(name, args)).map_err(|e| match e {
+        let prof_on = self.profiling_enabled();
+        let t_prof = if prof_on { Some(Instant::now()) } else { None };
+        let res = self.send_raw(&build_cmd(name, args)).map_err(|e| match e {
             MakcuError::Protocol(msg) => {
                 let wrapped = MakcuError::Protocol(format!("{name} failed: {msg}"));
                 self.note_error(&wrapped);
@@ -608,7 +645,11 @@ impl Transport for MakcuTransport {
                 self.note_error(&other);
                 other
             }
-        })
+        });
+        if let Some(t0) = t_prof {
+            self.record_profile(name, t0.elapsed());
+        }
+        res
     }
 
     fn send_raw(&self, data: &[u8]) -> Result<()> {
@@ -794,6 +835,82 @@ impl Transport for MakcuTransport {
         obs.rtt_total = Duration::ZERO;
         obs.rtt_count = 0;
         obs.last_error = None;
+    }
+
+    fn enable_profiling(&self) {
+        let mut obs = self.shared.obs.lock().unwrap();
+        if obs.profile.is_none() {
+            obs.profile = Some(HashMap::new());
+        }
+    }
+
+    fn disable_profiling(&self) {
+        self.shared.obs.lock().unwrap().profile = None;
+    }
+
+    fn profiling_enabled(&self) -> bool {
+        self.shared.obs.lock().unwrap().profile.is_some()
+    }
+
+    fn get_profile(&self) -> HashMap<String, ProfileEntry> {
+        let obs = self.shared.obs.lock().unwrap();
+        let mut out = HashMap::new();
+        if let Some(table) = obs.profile.as_ref() {
+            for (cmd, d) in table {
+                let total_s = d.total.as_secs_f64();
+                out.insert(
+                    cmd.clone(),
+                    ProfileEntry {
+                        count: d.count,
+                        total_s,
+                        avg_ms: if d.count > 0 {
+                            total_s / d.count as f64 * 1000.0
+                        } else {
+                            0.0
+                        },
+                        min_ms: d.min.as_secs_f64() * 1000.0,
+                        max_ms: d.max.as_secs_f64() * 1000.0,
+                    },
+                );
+            }
+        }
+        out
+    }
+
+    fn reset_profile(&self) {
+        let mut obs = self.shared.obs.lock().unwrap();
+        if let Some(table) = obs.profile.as_mut() {
+            table.clear();
+        }
+    }
+
+    fn record_profile(&self, cmd: &str, dt: Duration) {
+        let mut obs = self.shared.obs.lock().unwrap();
+        if let Some(table) = obs.profile.as_mut() {
+            match table.get_mut(cmd) {
+                None => {
+                    table.insert(
+                        cmd.to_string(),
+                        ProfileData {
+                            count: 1,
+                            total: dt,
+                            min: dt,
+                            max: dt,
+                        },
+                    );
+                }
+                Some(ent) => {
+                    ent.count += 1;
+                    ent.total += dt;
+                    if dt < ent.min {
+                        ent.min = dt;
+                    }
+                    if dt > ent.max {
+                        ent.max = dt;
+                    }
+                }
+            }
+        }
     }
 
     fn get_recent_lines(&self, n: usize) -> Vec<String> {

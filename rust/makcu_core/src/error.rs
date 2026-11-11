@@ -3,7 +3,7 @@
 use std::fmt;
 
 /// All failures the driver can report.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MakcuError {
     /// Serial port unavailable or I/O failure (holds the OS message).
     Connection(String),

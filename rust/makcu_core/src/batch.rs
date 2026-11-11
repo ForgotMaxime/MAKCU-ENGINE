@@ -11,8 +11,6 @@ use crate::{
 };
 
 /// Coalesced setter batch: one write, one ERR-window read.
-/// Same setter set and validation as [`crate::Mouse`]; queries refused.
-/// Coalesced setter batch: one write, one ERR-window read.
 pub struct BatchBuilder<'a, T: Transport> {
     t: &'a T,
     buf: Vec<u8>,

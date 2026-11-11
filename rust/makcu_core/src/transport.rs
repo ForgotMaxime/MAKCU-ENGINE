@@ -47,7 +47,9 @@
 //! `UnwindSafe` bounds on every callback. Keep callbacks trivial (set a
 //! flag, send on a channel).
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::Result;
 
@@ -75,6 +77,24 @@ pub struct TransportStats {
     pub avg_rtt_ms: f64,
     /// Last transport/protocol error message, if any.
     pub last_error: Option<String>,
+}
+
+/// Snapshot of per-command timings; see [`Transport::get_profile`].
+///
+/// Mirrors the Python `get_profile()` dict values `count`/`total_s`/
+/// `avg_ms`/`min_ms`/`max_ms` for one command name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProfileEntry {
+    /// Number of recorded `query` + `set` calls for this command.
+    pub count: u64,
+    /// Total recorded time in seconds.
+    pub total_s: f64,
+    /// Mean recorded time in milliseconds (`0.0` when `count == 0`).
+    pub avg_ms: f64,
+    /// Fastest recorded call in milliseconds.
+    pub min_ms: f64,
+    /// Slowest recorded call in milliseconds.
+    pub max_ms: f64,
 }
 
 /// Connection-change callback: called with `true` on connect, `false` on disconnect.
@@ -147,6 +167,51 @@ pub trait Transport {
     ///
     /// Default: no-op.
     fn reset_stats(&self) {}
+
+    /// Opt in to per-command timing; off by default.
+    ///
+    /// When enabled, `query` and `set` fold each call duration into the
+    /// per-command table (see [`Transport::get_profile`]). Off means a
+    /// single `profiling_enabled` check per call with no clock read, so the
+    /// disabled path stays cheap. Mirrors Python `enable_profiling()`.
+    ///
+    /// Default: no-op (profiling stays unsupported, `get_profile` is empty).
+    fn enable_profiling(&self) {}
+
+    /// Opt out of per-command timing; recorded data is discarded.
+    ///
+    /// Mirrors Python `disable_profiling()`. Default: no-op.
+    fn disable_profiling(&self) {}
+
+    /// Whether per-command timing is currently recorded.
+    ///
+    /// Default: `false`. This is the single gate checked by `query`/`set`,
+    /// so callers pay one cheap check when profiling is off.
+    fn profiling_enabled(&self) -> bool {
+        false
+    }
+
+    /// Snapshot of per-command timings, keyed by command name.
+    ///
+    /// Each entry carries `count`/`total_s`/`avg_ms`/`min_ms`/`max_ms`,
+    /// mirroring Python `get_profile()`. Returns a cloned snapshot, so
+    /// mutating the result never affects the transport. Default: empty.
+    fn get_profile(&self) -> HashMap<String, ProfileEntry> {
+        HashMap::new()
+    }
+
+    /// Clear per-command timings (keeps the enabled state).
+    ///
+    /// Mirrors Python `reset_profile()`. Default: no-op.
+    fn reset_profile(&self) {}
+
+    /// Fold one `query`/`set` duration into the per-command table.
+    ///
+    /// Called by `query`/`set` only after a positive
+    /// [`Transport::profiling_enabled`] check. Default: no-op. Hidden from
+    /// docs: prefer `enable_profiling` / `get_profile` / `reset_profile`.
+    #[doc(hidden)]
+    fn record_profile(&self, _cmd: &str, _dt: Duration) {}
 
     /// Last `n` raw `TX`/`RX` frames, oldest-first (at most
     /// [`RECENT_CAPACITY`] kept; `n == 0` yields `[]`).
@@ -257,6 +322,24 @@ impl<T: Transport> Transport for &T {
     }
     fn reset_stats(&self) {
         (**self).reset_stats();
+    }
+    fn enable_profiling(&self) {
+        (**self).enable_profiling();
+    }
+    fn disable_profiling(&self) {
+        (**self).disable_profiling();
+    }
+    fn profiling_enabled(&self) -> bool {
+        (**self).profiling_enabled()
+    }
+    fn get_profile(&self) -> HashMap<String, ProfileEntry> {
+        (**self).get_profile()
+    }
+    fn reset_profile(&self) {
+        (**self).reset_profile();
+    }
+    fn record_profile(&self, cmd: &str, dt: Duration) {
+        (**self).record_profile(cmd, dt);
     }
     fn get_recent_lines(&self, n: usize) -> Vec<String> {
         (**self).get_recent_lines(n)

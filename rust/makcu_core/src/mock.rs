@@ -1,11 +1,16 @@
-//! In-memory [`Transport`](crate::Transport) for tests and offline development.
+//! In-memory [`Transport`] for tests and offline development.
 //!
 //! Full observability mirror of the Python `MockTransport`: I/O counters,
-//! a bounded [`RECENT_CAPACITY`](crate::transport::RECENT_CAPACITY) ring
+//! a bounded [`RECENT_CAPACITY`] ring
 //! buffer, a nestable `no_wait` flag, and connection-change callbacks with
 //! snapshot-then-dispatch semantics (`connect` always notifies `true`;
 //! `close` notifies `false` only on a connected-to-disconnected transition,
 //! so `reconnect` emits `false` then `true`).
+//!
+//! Per-command profiling (`enable_profiling` / `get_profile` /
+//! `reset_profile` / `disable_profiling`) mirrors the Python table
+//! (`count`/`total_s`/`avg_ms`/`min_ms`/`max_ms` per command); off by
+//! default with a single enabled-check per `query`/`set` call.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{
@@ -15,7 +20,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::{
-    transport::{ConnectionCallback, TransportStats, RECENT_CAPACITY},
+    transport::{ConnectionCallback, ProfileEntry, TransportStats, RECENT_CAPACITY},
     MakcuError, Result, Transport,
 };
 
@@ -38,6 +43,21 @@ struct Obs {
     recent: VecDeque<String>,
     /// Nesting depth of `no_wait` scopes.
     no_wait_depth: usize,
+    /// Per-command timing table; `None` while profiling is disabled.
+    profile: Option<HashMap<String, ProfileData>>,
+}
+
+/// One row of the per-command timing table.
+#[derive(Debug, Clone, Default)]
+struct ProfileData {
+    /// Number of recorded calls.
+    count: u64,
+    /// Accumulated call time.
+    total: Duration,
+    /// Fastest call.
+    min: Duration,
+    /// Slowest call.
+    max: Duration,
 }
 
 /// In-memory `Transport` for tests and offline development.
@@ -77,7 +97,6 @@ impl MockTransport {
         self.stream.lock().unwrap().extend_from_slice(frame);
     }
 
-    /// Canned reply override, matched on the full command or base name.
     /// Canned reply override, matched on the full command or base name.
     pub fn with_reply(mut self, name: &str, value: &str) -> Self {
         self.replies.insert(name.to_string(), value.to_string());
@@ -191,6 +210,8 @@ fn fmt_cmd(name: &str, args: &[&str]) -> String {
 
 impl Transport for MockTransport {
     fn query(&self, name: &str, args: &[&str]) -> Result<String> {
+        let prof_on = self.profiling_enabled();
+        let t_prof = if prof_on { Some(Instant::now()) } else { None };
         let start = Instant::now();
         let payload = crate::protocol::build_cmd(name, args);
         self.note_tx(&payload);
@@ -210,6 +231,8 @@ impl Transport for MockTransport {
                 "km.middle" => "0",
                 "km.ms1" => "0",
                 "km.ms2" => "0",
+                "km.side1" => "0",
+                "km.side2" => "0",
                 "km.buttons" => "0",
                 "km.autorelease" => "0",
                 "km.api_version" => "1",
@@ -222,6 +245,9 @@ impl Transport for MockTransport {
         };
         self.note_rtt(start.elapsed());
         self.note_rx(&reply);
+        if let Some(t0) = t_prof {
+            self.record_profile(name, t0.elapsed());
+        }
         Ok(reply)
     }
 
@@ -229,15 +255,22 @@ impl Transport for MockTransport {
         if self.is_no_wait() {
             return self.fire_and_forget(name, args);
         }
-        if self.take_fail() {
+        let prof_on = self.profiling_enabled();
+        let t_prof = if prof_on { Some(Instant::now()) } else { None };
+        let res = if self.take_fail() {
             let err = MakcuError::Protocol(format!("{name} failed: device ERR"));
             self.note_error(&err);
-            return Err(err);
+            Err(err)
+        } else {
+            let payload = crate::protocol::build_cmd(name, args);
+            self.note_tx(&payload);
+            self.sent.lock().unwrap().push(fmt_cmd(name, args));
+            Ok(())
+        };
+        if let Some(t0) = t_prof {
+            self.record_profile(name, t0.elapsed());
         }
-        let payload = crate::protocol::build_cmd(name, args);
-        self.note_tx(&payload);
-        self.sent.lock().unwrap().push(fmt_cmd(name, args));
-        Ok(())
+        res
     }
 
     fn fire_and_forget(&self, name: &str, args: &[&str]) -> Result<()> {
@@ -330,6 +363,82 @@ impl Transport for MockTransport {
         obs.last_error = None;
     }
 
+    fn enable_profiling(&self) {
+        let mut obs = self.obs.lock().unwrap();
+        if obs.profile.is_none() {
+            obs.profile = Some(HashMap::new());
+        }
+    }
+
+    fn disable_profiling(&self) {
+        self.obs.lock().unwrap().profile = None;
+    }
+
+    fn profiling_enabled(&self) -> bool {
+        self.obs.lock().unwrap().profile.is_some()
+    }
+
+    fn get_profile(&self) -> HashMap<String, ProfileEntry> {
+        let obs = self.obs.lock().unwrap();
+        let mut out = HashMap::new();
+        if let Some(table) = obs.profile.as_ref() {
+            for (cmd, d) in table {
+                let total_s = d.total.as_secs_f64();
+                out.insert(
+                    cmd.clone(),
+                    ProfileEntry {
+                        count: d.count,
+                        total_s,
+                        avg_ms: if d.count > 0 {
+                            total_s / d.count as f64 * 1000.0
+                        } else {
+                            0.0
+                        },
+                        min_ms: d.min.as_secs_f64() * 1000.0,
+                        max_ms: d.max.as_secs_f64() * 1000.0,
+                    },
+                );
+            }
+        }
+        out
+    }
+
+    fn reset_profile(&self) {
+        let mut obs = self.obs.lock().unwrap();
+        if let Some(table) = obs.profile.as_mut() {
+            table.clear();
+        }
+    }
+
+    fn record_profile(&self, cmd: &str, dt: Duration) {
+        let mut obs = self.obs.lock().unwrap();
+        if let Some(table) = obs.profile.as_mut() {
+            match table.get_mut(cmd) {
+                None => {
+                    table.insert(
+                        cmd.to_string(),
+                        ProfileData {
+                            count: 1,
+                            total: dt,
+                            min: dt,
+                            max: dt,
+                        },
+                    );
+                }
+                Some(ent) => {
+                    ent.count += 1;
+                    ent.total += dt;
+                    if dt < ent.min {
+                        ent.min = dt;
+                    }
+                    if dt > ent.max {
+                        ent.max = dt;
+                    }
+                }
+            }
+        }
+    }
+
     fn get_recent_lines(&self, n: usize) -> Vec<String> {
         let obs = self.obs.lock().unwrap();
         let len = obs.recent.len();
@@ -413,6 +522,88 @@ mod tests {
                 last_error: None,
             }
         );
+    }
+
+    #[test]
+    fn profile_enable_query_set_get_reset_disable() {
+        use crate::transport::ProfileEntry;
+        let t = MockTransport::new();
+        // Off by default: nothing recorded, empty snapshot.
+        assert!(!t.profiling_enabled());
+        t.query("km.version", &[]).unwrap();
+        t.set("km.move", &["1", "0"]).unwrap();
+        assert!(t.get_profile().is_empty());
+        // Enable: queries and sets fold into the table.
+        t.enable_profiling();
+        assert!(t.profiling_enabled());
+        // Enabling twice keeps existing data (mirrors Python).
+        t.enable_profiling();
+        t.query("km.version", &[]).unwrap();
+        t.query("km.version", &[]).unwrap();
+        t.set("km.move", &["1", "0"]).unwrap();
+        let p = t.get_profile();
+        assert_eq!(p.len(), 2);
+        let ver: &ProfileEntry = &p["km.version"];
+        assert_eq!(ver.count, 2);
+        assert!(ver.total_s >= 0.0);
+        assert!((ver.avg_ms - ver.total_s / 2.0 * 1000.0).abs() < 1e-6);
+        assert!(ver.min_ms <= ver.avg_ms && ver.avg_ms <= ver.max_ms + 1e-9);
+        assert_eq!(p["km.move"].count, 1);
+        // Snapshot semantics: mutating the returned map is detached.
+        let mut snap = t.get_profile();
+        snap.clear();
+        assert_eq!(t.get_profile().len(), 2);
+        // Failed sets still record (mirrors Python `finally`).
+        t.fail_next_send();
+        assert!(t.set("km.move", &["1", "0"]).is_err());
+        assert_eq!(t.get_profile()["km.move"].count, 2);
+        // Reset clears but keeps profiling enabled.
+        t.reset_profile();
+        assert!(t.profiling_enabled());
+        assert!(t.get_profile().is_empty());
+        t.query("km.version", &[]).unwrap();
+        assert_eq!(t.get_profile()["km.version"].count, 1);
+        // Disable discards everything.
+        t.disable_profiling();
+        assert!(!t.profiling_enabled());
+        assert!(t.get_profile().is_empty());
+        t.query("km.version", &[]).unwrap();
+        assert!(t.get_profile().is_empty());
+        // Reset while disabled is a no-op that stays disabled.
+        t.reset_profile();
+        assert!(!t.profiling_enabled());
+    }
+
+    #[test]
+    fn default_replies_match_python_table() {
+        // Expected values copied from the Python MockTransport._lookup table
+        // (plus the km.lock_* and button-suffix rules): base name replies,
+        // every lock target, and the empty fallback.
+        let expected: &[(&str, &str)] = &[
+            ("km.version", "km.MAKCU"),
+            ("km.device", "R:MK;M:16uf;K:8uf;C:0uf"),
+            ("km.echo", "0"),
+            ("km.moving", "0"),
+            ("km.left", "0"),
+            ("km.right", "0"),
+            ("km.middle", "0"),
+            ("km.side1", "0"),
+            ("km.side2", "0"),
+            ("km.ms1", "0"),
+            ("km.ms2", "0"),
+            ("km.buttons", "0"),
+            ("km.autorelease", "0"),
+            ("km.api_version", "1"),
+            ("km.getpos", "km.getpos(100,200)"),
+            ("km.screen", "km.screen(1920,1080)"),
+            ("km.lock_mx", "0"),
+            ("km.lock_my", "0"),
+            ("km.bogus", ""),
+        ];
+        let t = MockTransport::new();
+        for (cmd, want) in expected {
+            assert_eq!(t.query(cmd, &[]).unwrap(), *want, "{cmd}");
+        }
     }
 
     #[test]
