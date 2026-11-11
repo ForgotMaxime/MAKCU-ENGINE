@@ -255,7 +255,7 @@ class MockTransport:
     def read_exact(self, n: int, timeout_s: float = 0.5) -> bytes:
         """Pop exactly n bytes from the queued stream bytes."""
         if n <= 0:
-            raise MakcuProtocolError(f"read_exact n={n}")
+            raise MakcuProtocolError(f"n out of range: {n}")
         if len(self._stream) < n:
             raise MakcuTimeoutError("short stream read")
         out = bytes(self._stream[:n])

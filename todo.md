@@ -60,21 +60,21 @@ Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis
 - [x] Trous coverage listés — `tests/test_coverage_gaps.py` (19 tests nommés) + `test_transport_unit.py` (8 tests, serial mocké) — mergé (`feat/py-p1-tests`).
 - [x] `tests/test_transport_unit.py` avec serial mocké in-memory : query/strip, fenêtre ERR (dont `error_window_s=0`), `no_wait`, stats/ring/profile, `reconnect` — sans hardware — mergé.
 - [x] `ButtonMonitor` : `_run` survit aux frames malformées (compte + continue), `drain()` sous lock, `stop()` + alive-check, accesseurs `is_running`/`pump_errors` — mergé.
-- [ ] Convention messages unifiée : appliquée aux fichiers touchés par py-p0 (`MakcuProtocolError("<param> …")`) — reste balayage `transport/types/macros` + `check_*` Rust + note `protocol.md` + tests de préfixes.
+- [x] Convention messages unifiée : appliquée partout côté validations (`<param> …: <v>`, les deux stacks) + note `protocol.md` + tests de préfixes. Parse-errors (`non-ascii`, `missing prompt`…) hors convention : pas de paramètre fautif à nommer — statu quo documenté ici.
 - [x] `click_human_like(rng=None)` injectable, défaut global — mergé (`feat/py-p0-fixes`, parité sampler Rust).
 - [x] Petits manques : alias `scroll`, `udp_relay` 5 boutons, doc `is_locked` vs `is_pressed`, alias `enable_button_monitoring`, exports `__init__` — mergé. Reste si demande : conveniences `lock_left/…`.
 - [x] `docs/protocol.md` : sous-sections `no_wait`, stats/ring/profiler, trame bezier 5-arg, `press/release/double_click/init`, coûts (5/14 queries), règle mode-3/loop + liens `makcu.com/mcp` et `/api/versions` — mergé (`feat/docs-refresh`).
 - [x] Knobs transport Rust : `ensure_connected` implémenté (hook `check_connected`) ; `retries`/`error_window`/`candidates` documentés-intentionnels — mergé (`feat/rust-p1b`).
 - [x] `wait_idle` Rust : `wait_idle_with_poll(timeout, poll)` + wrapper 20 ms ; poll négatif irreprésentable (`Duration`) — mergé + test.
 - [ ] Exemples Rust : `batch` + stream + stats sans click/scroll (ex. `batch_monitor.rs` HW-gated).
-- [x] `requires_api(min)` Rust — mergé ; pendant Python en cours (`feat/py-p1b`), parité à confirmer au merge.
-- [ ] `move_abs` portable bouclé sur `getpos()` (sans ctypes, clean-room, mêmes maths) — M.
-- [ ] `move_pattern` waypoints + `click_sequence` (idée MIT, pas de copie) — M.
+- [x] `requires_api(min)` + gate `set_autorelease`/`heartbeat` : parité Python↔Rust confirmée (messages par idiome, ERR→0 côté Python) — mergé des deux côtés.
+- [x] `move_abs` portable bouclé sur `getpos()` + `move_pattern` waypoints + `click_sequence` (host-side, sans ctypes) — mergé Python (`feat/py-p1b`). Reste : miroir Rust (mêmes maths) si usage confirmé.
+- [x] Mock `read_exact` aligné sur la convention (`n out of range`) — fait au merge.
 - [ ] Spike `windmouse-rs` 0.1.1 (MIT, idée seule — pas de dép, core zéro-dép) : évaluer l'algo vent/gravité (param G/W/M/D, `max_step`, `target_area`) comme référence clean-room d'un planificateur `move_wind`, mêmes maths Python+Rust ; avec le caveat détectabilité (variation naturelle, pas d'indétectabilité — cside 2026). — S/M.
 - [ ] Spike planificateur SigmaDrift (MIT : Fitts + sigma-lognormal, replay deltas) avec caveat détectabilité — L.
 - [ ] Comparaison reconnect/backoff K4HVH (writer coalescent + monitor, `Send+Sync`) — n'adopter que mesuré — S.
 - [ ] `km.catch_m*` : probe HW de capacité d'abord, pas d'API avant — S/M (idée MIT, V3 exclu sauf preuve).
-- [x] `button_up_force` : pas d'ajout — `up(b, true)` (trame `2`) est le seul chemin force firmware, documenté (Python à confirmer).
+- [x] `button_up_force` : pas d'ajout des deux côtés — `up(b, true)` (trame `2`) saute la frame donc ne décoince rien ; primitive = `up()` (trame `0`) + `init()` — documenté, test `km.left(0)` vs `(2)`.
 
 ### P2 — hygiène / dette
 - [x] `ruff format --check` en CI — appliqué : gate ajoutée (`ci.yml`), 9 fichiers reformatés (`104f4d0`). Dérive future bloquée comme `cargo fmt`.

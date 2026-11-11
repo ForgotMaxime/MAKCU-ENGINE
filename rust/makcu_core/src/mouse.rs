@@ -353,10 +353,11 @@ impl<T: Transport> Mouse<T> {
 
     /// Release a mouse button; silent variant skips the frame.
     ///
-    /// Verdict on `button_up_force` (no Python counterpart, no hardware to
-    /// probe): no separate force API exists. `up(b, true)` sends the
-    /// firmware silent-release (`... 2`) frame — the only force path — and
-    /// matches Python `up(silent_release=True)` exactly.
+    /// Verdict on `button_up_force`: no separate force API exists. The
+    /// silent variant (wire `2`) *skips* the release frame, so it cannot
+    /// unstick anything; the unstick primitive is plain `up` (wire `0`),
+    /// and [`init`](Self::init) best-efforts it on all five buttons.
+    /// Matches Python `up(silent_release=…)` exactly.
     pub fn up(&self, b: Button, silent_release: bool) -> Result<()> {
         self.t.set(
             &format!("km.{}", button_method(b)),
@@ -581,15 +582,17 @@ impl<T: Transport> Mouse<T> {
             .map_err(|_| MakcuError::Protocol("bad autorelease".into()))
     }
 
-    /// Set the autorelease timeout, 0 disables (V4.103+).
+    /// Set the autorelease timeout, 0 disables (V4.103+, api_version 1+).
     pub fn set_autorelease(&self, timeout_ms: u32) -> Result<()> {
         check_autorelease(timeout_ms)?;
+        self.requires_api(1)?;
         let v = timeout_ms.to_string();
         self.t.set("km.autorelease", &[&v])
     }
 
-    /// Restart the autorelease timer (V4.103+).
+    /// Restart the autorelease timer (V4.103+, api_version 1+).
     pub fn heartbeat(&self) -> Result<()> {
+        self.requires_api(1)?;
         self.t.set("km.heartbeat", &[])
     }
 
