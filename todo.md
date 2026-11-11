@@ -29,14 +29,14 @@ Légende : `[P0]` critique, `[P1]` utile, `[P2]` idée. Cible de fichier entre p
 - [x] Compteurs `tx_bytes/cmds_sent/reconnects/avg_rtt_ms/last_error` + ring buffer `get_recent_lines()` (`transport.py`, miroir mock) — mergé (fix `n<=0` appliqué au merge).
 - [x] `no_wait()` context manager imbricable (`transport.py`, `set()` → fire-and-forget, queries inchangées) — mergé.
 - [x] Multi-écran : `Monitor`/`Bounds` + `virtual_bounds/to_local/to_virtual/remap_point` (`types.py`) — mergé.
-- [ ] Profiler par commande, coût nul quand off (`protocol.py`, cf. crate `makcu` `profile`, `makcu-cpp PerformanceProfiler`) — reste à faire, voir § Idées restantes.
-- [ ] Exemple relai UDP→série (`examples/`, cf. `MakcuRelay` MIT) — reste à faire, voir § Idées restantes.
+- [ ] Profiler par commande, coût nul quand off (`protocol.py`, cf. crate `makcu` `profile`, `makcu-cpp PerformanceProfiler`).
+- [ ] Exemple relai UDP→série (`examples/`, cf. `MakcuRelay` MIT).
 
-## [P1] 0.7.0 — Humanisation `extras` (mêmes maths Python/Rust)
-- [ ] `move_bezier(dx, dy, segments, ctrl_x, ctrl_y)` côté firmware (`km.move(x,y,seg,cx,cy)`, cf. `pymakcu`/`makcu-py-lib`) — acceptation : mock + HW, fallback `ctrl=dx//2, dy//2`.
-- [ ] `click_human_like(button, count, profile, jitter)` : profils `normal/fast/slow/variable/gaming` + jitter, down 40-120 ms log-normal, 2 % outliers, double-click 80-180 ms (`mouse.py`, valeurs `makcu-py-lib`) — acceptation : test timings mockés, pas de `sleep` réel en unit.
-- [ ] `drag_abs(start, end, button, duration)` canonique : move + press + `segments=max(10, duration*30)` + release + settles 20 ms (`mouse.py`, cf. `drag` existant relatif) — acceptation : exemple `smooth.py` étendu, retour home net-zéro HW.
-- [ ] Mapping DPI/sens + `coord_space: virtual|monitor_local` explicite (`types.py`, `mouse.py`) — acceptation : jamais de 96 DPI implicite, doc + test de conversion.
+## [P1] 0.7.0 — Humanisation `extras` (mêmes maths Python/Rust) — MERGÉ 2026-11-11
+- [x] `move_bezier(dx, dy, segments, ctrl_x, ctrl_y)` firmware + `check_bezier` (`mouse.py`, `protocol.py`) — mergé.
+- [x] `click_human_like(button, count, profile, jitter)` 5 profils + jitter (`mouse.py`, `CLICK_PROFILES`) — mergé.
+- [x] `drag_abs(start, end, button, duration)` canonique (`mouse.py`, release via `finally`) — mergé.
+- [x] Mapping DPI/sens : `CoordSpace` + `scale_coordinates()` purs (`types.py`, sans état global) — mergé.
 - [ ] Macros JSON `{version, screenLayout, events}` : `dedupe_moves/scale_coordinates/adjust_delays(0.25-4x)`, replay en deltas rel (`examples/` d'abord, core ensuite si usage réel).
 
 ## [P1] 0.8.0 — Robustesse / observabilité

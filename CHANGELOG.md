@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased (Python) — 2026-11-11
+
+Quatre branches parallèles, mergées dans `main` après review, résolution
+de conflits et re-validation (`pytest -k "not hardware"`, `ruff`, `mypy --strict`) :
+- `feat/p0-lifecycle-aliases` : `Mouse.init()` (opt-in, jamais auto-appelé),
+  alias `press`/`release`, `double_click`, `BatchBuilder.up(silent_release)`.
+- `feat/p0-state-observe` : `get_all_lock_states/is_locked`,
+  `get_button_states/mask/is_pressed`, callbacks `on_connection_change`
+  (exceptions isolées + log) ; miroir mock (callbacks, `ms1`/`ms2`).
+- `feat/p1-transport-docs` : compteurs `get_stats/reset_stats`, ring buffer
+  `get_recent_lines` (fix `n<=0 → []` au merge), `no_wait()` imbricable,
+  `Monitor`/`Bounds` + `virtual_bounds/to_local/to_virtual/remap_point`,
+  verdicts `docs/protocol.md` (interpolation `0x1F`, snapshots `0x55/0x56`,
+  wheel-telemetry : hors scope ASCII).
+- `feat/p1-humanize` : `move_bezier` (firmware `km.move(x,y,seg,cx,cy)`),
+  `click_human_like` (5 profils + jitter), `drag_abs` (`finally`-release),
+  `CoordSpace` + `scale_coordinates` purs.
+- Conflits de merge résolus : double `reconnect()` mock fusionné
+  (close/reopen + compteur), blocs `mouse.py` complémentaires conservés.
+  86 tests unitaires verts ; 4 tests HW pré-existants en échec environnemental
+  (port série fantôme rejette `km.move`, identique sur `main` propre).
+
 ## 0.5.1 (Python) / 0.4.1 (Rust) — 2026-11-05
 
 Second external audit, all points verified against code and fixed:
