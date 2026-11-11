@@ -29,15 +29,16 @@ Légende : `[P0]` critique, `[P1]` utile, `[P2]` idée. Cible de fichier entre p
 - [x] Compteurs `tx_bytes/cmds_sent/reconnects/avg_rtt_ms/last_error` + ring buffer `get_recent_lines()` (`transport.py`, miroir mock) — mergé (fix `n<=0` appliqué au merge).
 - [x] `no_wait()` context manager imbricable (`transport.py`, `set()` → fire-and-forget, queries inchangées) — mergé.
 - [x] Multi-écran : `Monitor`/`Bounds` + `virtual_bounds/to_local/to_virtual/remap_point` (`types.py`) — mergé.
-- [ ] Profiler par commande, coût nul quand off (`protocol.py`, cf. crate `makcu` `profile`, `makcu-cpp PerformanceProfiler`).
-- [ ] Exemple relai UDP→série (`examples/`, cf. `MakcuRelay` MIT).
+- [x] Profiler par commande, coût nul quand off (`transport.py`, miroir mock, `enable/disable_profiling/get_profile`) — mergé (`feat/py-remainder`).
+- [x] Exemple relai UDP→série (`examples/udp_relay.py`, subset sûr, `--port` explicite) — mergé.
+- [x] Macros JSON `{version, screenLayout, events}` : `dedupe_moves/scale_coordinates/adjust_delays`, replay en deltas rel, plan par défaut (`examples/macros.py`) — mergé.
 
 ## [P1] 0.7.0 — Humanisation `extras` (mêmes maths Python/Rust) — MERGÉ 2026-11-11
 - [x] `move_bezier(dx, dy, segments, ctrl_x, ctrl_y)` firmware + `check_bezier` (`mouse.py`, `protocol.py`) — mergé.
 - [x] `click_human_like(button, count, profile, jitter)` 5 profils + jitter (`mouse.py`, `CLICK_PROFILES`) — mergé.
 - [x] `drag_abs(start, end, button, duration)` canonique (`mouse.py`, release via `finally`) — mergé.
 - [x] Mapping DPI/sens : `CoordSpace` + `scale_coordinates()` purs (`types.py`, sans état global) — mergé.
-- [ ] Macros JSON `{version, screenLayout, events}` : `dedupe_moves/scale_coordinates/adjust_delays(0.25-4x)`, replay en deltas rel (`examples/` d'abord, core ensuite si usage réel).
+- [ ] Macros JSON `{version, screenLayout, events}` : `dedupe_moves/scale_coordinates/adjust_delays(0.25-4x)`, replay en deltas rel (`examples/` d'abord, core ensuite si usage réel) — helpers + exemple mergés (`feat/py-remainder`) ; reste : intégration core si usage réel.
 
 ## [P1] 0.8.0 — Robustesse / observabilité
 - [ ] Compteurs `tx_bytes/cmds_sent/reconnects/avg_rtt_ms/last_error` + ring buffer `get_recent_lines()` + `cmd_id` par move (`transport.py`).
