@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import time
 
 from .abc import Transport
@@ -10,6 +11,7 @@ from .errors import MakcuProtocolError
 from .protocol import (
     button_method,
     check_autorelease,
+    check_bezier,
     check_click,
     check_mask_bit,
     check_screen_size,
@@ -23,6 +25,15 @@ from .protocol import (
     parse_screen,
 )
 from .types import Button, ButtonOwnership, DeviceInfo, LockTarget, Position, Screen
+
+CLICK_PROFILES: dict[str, tuple[int, int, int, int]] = {
+    "normal": (60, 120, 100, 180),
+    "fast": (30, 60, 50, 100),
+    "slow": (100, 180, 150, 300),
+    "variable": (40, 200, 80, 250),
+    "gaming": (20, 40, 30, 60),
+}
+"""Click timing profiles in ms: (down_min, down_max, wait_min, wait_max)."""
 
 
 class Mouse:
@@ -127,6 +138,44 @@ class Mouse:
         finally:
             self.up(button)
 
+    def move_bezier(
+        self,
+        dx: int,
+        dy: int,
+        segments: int = 20,
+        ctrl_x: int | None = None,
+        ctrl_y: int | None = None,
+    ) -> None:
+        """Firmware-side quadratic curve: km.move(dx,dy,segments,cx,cy)."""
+        cx = dx // 2 if ctrl_x is None else ctrl_x
+        cy = dy // 2 if ctrl_y is None else ctrl_y
+        check_bezier(segments, cx, cy)
+        self._t.set("km.move", clamp_i16(dx), clamp_i16(dy), segments, cx, cy)
+
+    def drag_abs(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        button: Button = Button.LEFT,
+        duration: float = 1.0,
+    ) -> None:
+        """Absolute drag: moveto(start), press, smooth-move, release."""
+        if duration <= 0:
+            raise MakcuProtocolError(f"duration out of range: {duration}")
+        check_xy(*start)
+        check_xy(*end)
+        segments = max(10, int(duration * 30))
+        self.moveto(*start)
+        time.sleep(0.02)
+        self.down(button)
+        try:
+            self.move_smooth(
+                end[0] - start[0], end[1] - start[1], segments, duration / segments
+            )
+        finally:
+            self.up(button)
+        time.sleep(0.02)
+
     def silent(self, x: int, y: int) -> None:
         """Move, silent left click, move back."""
         check_xy(x, y)
@@ -147,6 +196,26 @@ class Mouse:
             self._t.set("km.click", button.value, count)
         else:
             self._t.set("km.click", button.value, count, hold_ms)
+
+    def click_human_like(
+        self, button: Button, count: int = 1, profile: str = "normal", jitter: int = 0
+    ) -> None:
+        """Human-like clicks: randomized hold/inter-click sleeps per profile."""
+        if profile not in CLICK_PROFILES:
+            raise MakcuProtocolError(f"unknown click profile: {profile!r}")
+        if not 1 <= count <= 255:
+            raise MakcuProtocolError(f"count out of range: {count}")
+        if jitter < 0:
+            raise MakcuProtocolError(f"jitter out of range: {jitter}")
+        down_min, down_max, wait_min, wait_max = CLICK_PROFILES[profile]
+        for i in range(count):
+            if jitter:
+                self.move(random.randint(-jitter, jitter), random.randint(-jitter, jitter))
+            self.down(button)
+            time.sleep(random.uniform(down_min, down_max) / 1000.0)
+            self.up(button)
+            if i < count - 1:
+                time.sleep(random.uniform(wait_min, wait_max) / 1000.0)
 
     def set_move_mask(self, left: int, right: int, down: int, up: int) -> None:
         """Block physical movement per direction (each 0/1)."""

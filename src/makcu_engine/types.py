@@ -64,3 +64,27 @@ class LockTarget(str, Enum):
     MY_NEG = "my-"
     MW_POS = "mw+"
     MW_NEG = "mw-"
+
+
+class CoordSpace(str, Enum):
+    """Coordinate space tag for scale_coordinates (no global state)."""
+
+    DESKTOP = "desktop"
+    GAME = "game"
+
+
+def scale_coordinates(
+    x: int, y: int, *, game_dpi: float, desktop_dpi: float, sens: float
+) -> tuple[int, int]:
+    """Scale desktop pixels to game counts: round(v * game_dpi / desktop_dpi * sens).
+
+    Pure helper; all factors must be > 0.
+    """
+    if game_dpi <= 0:
+        raise ValueError(f"game_dpi out of range: {game_dpi}")
+    if desktop_dpi <= 0:
+        raise ValueError(f"desktop_dpi out of range: {desktop_dpi}")
+    if sens <= 0:
+        raise ValueError(f"sens out of range: {sens}")
+    factor = game_dpi / desktop_dpi * sens
+    return round(x * factor), round(y * factor)
