@@ -15,3 +15,6 @@ rust/target/
 # Local-only notes — never committed
 TODO.local.md
 *.local.md
+# Inspiration clones (third-party, GPL/MIT mixed — never commit, local study only)
+inspiration/*
+!inspiration/README.md
