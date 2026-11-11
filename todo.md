@@ -21,9 +21,16 @@ Légende : `[P0]` critique, `[P1]` utile, `[P2]` idée. Cible de fichier entre p
 - [x] Parité `BatchBuilder.up(silent_release=…)` (`batch.py`) — mergé.
 - [x] `get_all_lock_states() + is_locked()` stateless (`mouse.py`) — mergé.
 - [x] `get_button_states()/get_button_mask()/is_pressed()` (`mouse.py`) — mergé.
-- [x] `on_connection_change(cb)` + `remove_connection_callback` (`transport.py`, mock镜) — mergé.
-- [ ] Trancher `interpolation 0x1F` : pas de nom `km.*` texte connu → soit `send_raw` documenté, soit marqué non supporté ASCII (`docs/protocol.md`) — assigné `feat/p1-transport-docs`, en cours.
-- [ ] Trancher stream `wheel-telemetry 0x20` + snapshots `0x55/0x56` : binaire → a priori non-goals, à documenter explicitement (`docs/protocol.md`) — assigné `feat/p1-transport-docs`, en cours.
+- [x] `on_connection_change(cb)` + `remove_connection_callback` (`transport.py`, miroir mock) — mergé.
+- [x] Trancher `interpolation 0x1F` : pas de nom `km.*` texte connu → soit `send_raw` documenté, soit marqué non supporté ASCII (`docs/protocol.md`) — mergé (verdict non supporté, `feat/p1-transport-docs`).
+- [x] Trancher stream `wheel-telemetry 0x20` + snapshots `0x55/0x56` : binaire → a priori non-goals, à documenter explicitement (`docs/protocol.md`) — mergé (verdicts `feat/p1-transport-docs`).
+
+### [P1] 0.8.0 — Robustesse / observabilité — PARTIE MERGÉE 2026-11-11
+- [x] Compteurs `tx_bytes/cmds_sent/reconnects/avg_rtt_ms/last_error` + ring buffer `get_recent_lines()` (`transport.py`, miroir mock) — mergé (fix `n<=0` appliqué au merge).
+- [x] `no_wait()` context manager imbricable (`transport.py`, `set()` → fire-and-forget, queries inchangées) — mergé.
+- [x] Multi-écran : `Monitor`/`Bounds` + `virtual_bounds/to_local/to_virtual/remap_point` (`types.py`) — mergé.
+- [ ] Profiler par commande, coût nul quand off (`protocol.py`, cf. crate `makcu` `profile`, `makcu-cpp PerformanceProfiler`) — reste à faire, voir § Idées restantes.
+- [ ] Exemple relai UDP→série (`examples/`, cf. `MakcuRelay` MIT) — reste à faire, voir § Idées restantes.
 
 ## [P1] 0.7.0 — Humanisation `extras` (mêmes maths Python/Rust)
 - [ ] `move_bezier(dx, dy, segments, ctrl_x, ctrl_y)` côté firmware (`km.move(x,y,seg,cx,cy)`, cf. `pymakcu`/`makcu-py-lib`) — acceptation : mock + HW, fallback `ctrl=dx//2, dy//2`.
