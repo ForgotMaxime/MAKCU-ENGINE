@@ -35,6 +35,17 @@ de conflits et re-validation (`pytest -k "not hardware"`, `ruff`, `mypy --strict
   (panics non rattrapées, documenté), defaults de trait pour compatibilité ;
   miroir mock (8 tests) + impl `makcu_serial` (port sous `Mutex<Option<>>`,
   `reconnect` +300 ms). 40 tests verts au total workspace (7 HW ignorés).
+- `feat/rust-p0-fixes` : profiler Rust (opt-in, internals `Duration`,
+  jamais `send_raw`/`fire_and_forget`), `move_smooth` arrondi `round_ties_even`
+  documenté + test négatif, mock `side1`/`side2`, `cargo doc -D warnings` vert
+  (+ déduplication doc), `MakcuError: PartialEq/Eq/Clone`, jitter-0 pin,
+  `list_candidates` 3-tiers documenté-intentionnel. 44 tests verts.
+- `feat/py-p0-fixes` : `button_stream_state` modes 2/3, `BatchBuilder`
+  (`set_echo/set_screen/move_bezier/press/release/scroll`, `click` 0-passthrough),
+  signatures mock/réel + `abc.Transport` étendu, validation → `MakcuProtocolError`
+  (`poll_s`, cap 60 s, `Monitor`), `hold_ms=0` random-firmware, ownership doc,
+  `rng` injectable, alias `scroll`/`enable_button_monitoring`, exports
+  `CLICK_PROFILES`/`CoordSpace`, relay 5 boutons. 22 tests (`test_p0.py`).
 
 ## 0.5.1 (Python) / 0.4.1 (Rust) — 2026-11-05
 

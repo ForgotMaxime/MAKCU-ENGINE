@@ -211,7 +211,7 @@ Crates:
 | `move(+2,0)+move(-2,0)` net-zero | pass | pass | position unchanged |
 | batch full-set + `autorelease` roundtrip | pass (unit + HW) | pass (unit + HW) | firmware answers `autorelease` |
 | rejected-setter ERR window | unit | unit + HW-timed < 500 ms | `hw_setter_error_window_fast` (ignored) |
-| Unit (framing, parsing, validation, mock flow, batch, stream, monitor, smooth/drag, humanize, observers, stats/ring/no_wait, profiler, lifecycle, packaging) | 95 passed | 40 passed | + 8 HW Python (gated) / 7 HW Rust (ignored) |
+| Unit (framing, parsing, validation, mock flow, batch, stream, monitor, smooth/drag, humanize, observers, stats/ring/no_wait, profiler, lifecycle, FakeSerial, packaging) | 151 passed | 44 passed | + 8 HW Python (gated) / 7 HW Rust (ignored) |
 | Lints | `ruff + mypy --strict` | `clippy -D warnings`, `fmt` | clean |
 
 Integration tests never click, never scroll, and never change persistent settings. Only `COM4` is touched; `COM3` (virtual, not ready) and `COM5/COM6` (ESP32-S3, `Unknown`) are left alone.
@@ -238,7 +238,7 @@ Integration tests never click, never scroll, and never change persistent setting
 | `get_stats()` dict | `get_stats()` → `TransportStats` struct | same keys (`tx_bytes/cmds_sent/reconnects/avg_rtt_ms/last_error`) |
 | `MockTransport.is_connected` property | `is_connected()` method | attr-style vs call-style; both backed by a bool field |
 | `connect()` always reopens (guard lives in `__enter__`) | `connect()` idempotent no-op when open | Python mock `connect()` always notifies `True`, like Rust |
-| per-command profiler (`enable/get/reset_profile`) | absent in Rust (this snapshot: no `profil*` under `rust/`) | counting-only port; `TransportStats`/ring/`no_wait`/callbacks present |
+| per-command profiler (`enable/get/reset_profile`) | ported: same opt-in table + snapshot semantics, `Duration`-based internals | `TransportStats`/ring/`no_wait`/callbacks present |
 | setter errors `device ERR: …` / `<name> failed: …` | serial `rejected: …` / `<name> failed: …` | same wrap shape (`batch […] failed: …` too); rejection text differs (Rust mock mirrors Python's `device ERR`) |
 | connection callbacks: raising one is logged, rest run | no isolation: a panic unwinds, remaining callbacks skipped | keep Rust callbacks trivial — never panic, never re-enter connect/close |
 | `errors.ConnectionError` shadowing builtin | `MakcuConnectionError` etc. | prefixed to avoid shadowing `std` |

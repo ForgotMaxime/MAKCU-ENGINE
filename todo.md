@@ -44,25 +44,25 @@ Légende : `[P0]` critique, `[P1]` utile, `[P2]` idée. Cible de fichier entre p
 Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis V4.107, pas de course parité. Ordre suggéré : bump release → P0 → P1 → P2.
 
 ### P0 — correctness / bloque la release
-- [x] README drift : listes API `Mouse`/`Transport`, layout, features, nombres, table de portage — mergé (`feat/docs-refresh`). Suivi : retoucher la ligne "profiler-absent-in-Rust" après le merge du profiler Rust.
-- [ ] `button_stream_state()` faux pour modes 2/3 (`mouse.py:332`, `== "1"`) : `!= "0"` ou `self._stream_mode`. Test mock `km.buttons:2/3`.
-- [ ] `BatchBuilder` : `set_echo` ? / verdict `set_screen` (`confirm=True` sans équivalent batch) / `move_bezier` (trame 5-arg batchable) / alias `press/release` — implémenter à validation identique ou resserrer docstring `batch.py:7` + verdict.
-- [ ] Dérive signatures mock/réel : kwargs `retries`/`error_window_s` acceptés partout, combler `abc.Transport` (`connect/close/reconnect/ensure_connected/callbacks/stats/no_wait`), `_note_tx` mock avec fallback `repr` (binaire). Test mypy sur les deux transports + `send_raw` binaire.
-- [ ] Port Rust du profiler (zéro hit `profil*` dans `rust/`) : même sémantique opt-in + test (`MockTransport` + `MakcuTransport`).
-- [ ] `move_smooth` Rust : division tronquée vs `round()` Python sur deltas négatifs (`-3/2` : `-2` vs `-1`, pas juste ±1) — arrondi documenté + test négatif.
-- [ ] Mock Rust : bras `side1/side2` manquants (README "same canned replies" faux) — test ligne-à-ligne vs table Python.
-- [ ] `cargo doc -D warnings` rouge (`types.rs:204,295` liens `MakcuError`, `mock.rs` liens redondants + doublons § P2) — réparer, ajouter au checklist CI.
-- [ ] Tout-échec → `MakcuProtocolError` : `wait_idle(poll_s<0)` (`ValueError` stdlib), `drag_abs(duration=1e9)` (segments géants), `Monitor(scale=0)` (`ZeroDivisionError`) — cap ou raise + tests.
-- [ ] Ownership tri-state : vérifier `ButtonOwnership` (NONE/PHYSICAL/INJECTED/BOTH) suffit — sinon query dédiée ; doc.
-- [ ] `click(hold_ms=0)` : vérifier passthrough random-firmware 35–75 ms (spec binaire CLICK) ; doc + test, sinon verdict.
+- [x] README drift : listes API `Mouse`/`Transport`, layout, features, nombres, table de portage — mergé (`feat/docs-refresh` + retouche ligne profiler-Rust après `feat/rust-p0-fixes`).
+- [x] `button_stream_state()` modes 2/3 (`!= "0"`) — mergé (`feat/py-p0-fixes`, test mock 0/1/2/3).
+- [x] `BatchBuilder` : `set_echo`, `set_screen(confirm=…)` miroir Mouse, `move_bezier`, alias `press/release`, `scroll` ; docstring réécrite — mergé.
+- [x] Signatures mock/réel unifiées (kwargs `retries`/`error_window_s`), `abc.Transport` étendu, `_note_tx` fallback `repr` — mergé + test mypy deux transports.
+- [x] Port Rust du profiler (opt-in, sémantique snapshot, internals `Duration`) + test — mergé (`feat/rust-p0-fixes`).
+- [x] `move_smooth` Rust : `round_ties_even` documenté + test négatif (`-3/-5`) — mergé.
+- [x] Mock Rust : bras `side1/side2` + test table ligne-à-ligne vs Python — mergé.
+- [x] `cargo doc -D warnings` vert (liens + déduplication doc) — mergé ; gate qualité de nouveau satisfiable.
+- [x] Tout-échec → `MakcuProtocolError` : `wait_idle(poll_s<0)`, `drag_abs` cap 60 s, `Monitor(scale<=0)`, `scale_coordinates` — mergé + tests.
+- [x] Ownership tri-state : déjà exposé (0/1/2/3), doc NONE/PHYSICAL/INJECTED/BOTH + test 4 états — pas de nouvelle query.
+- [x] `click(hold_ms=0)` : passthrough random-firmware 35–75 ms (`km.click(b,count,0)`), `protocol.check_click` inchangé — mergé + doc + test.
 
 ### P1 — utile
 - [x] Trous coverage listés — `tests/test_coverage_gaps.py` (19 tests nommés) + `test_transport_unit.py` (8 tests, serial mocké) — mergé (`feat/py-p1-tests`).
 - [x] `tests/test_transport_unit.py` avec serial mocké in-memory : query/strip, fenêtre ERR (dont `error_window_s=0`), `no_wait`, stats/ring/profile, `reconnect` — sans hardware — mergé.
 - [x] `ButtonMonitor` : `_run` survit aux frames malformées (compte + continue), `drain()` sous lock, `stop()` + alive-check, accesseurs `is_running`/`pump_errors` — mergé.
-- [ ] Convention messages d'erreur unifiée (`MakcuProtocolError("<param>…")`) + note `protocol.md` + tests de préfixes, les deux langages (`check_*` style drift Rust inclus).
-- [ ] `click_human_like(rng=None)` injectable, défaut global (parité sampler Rust) ; tests existants inchangés.
-- [ ] Petits manques : alias `scroll`, `udp_relay` 5 boutons, recettes `set_lock`/exemple doc, doc `is_locked` vs `is_pressed`, alias `enable_button_monitoring` — implémenter + test ou rejeter explicitement.
+- [ ] Convention messages unifiée : appliquée aux fichiers touchés par py-p0 (`MakcuProtocolError("<param> …")`) — reste balayage `transport/types/macros` + `check_*` Rust + note `protocol.md` + tests de préfixes.
+- [x] `click_human_like(rng=None)` injectable, défaut global — mergé (`feat/py-p0-fixes`, parité sampler Rust).
+- [x] Petits manques : alias `scroll`, `udp_relay` 5 boutons, doc `is_locked` vs `is_pressed`, alias `enable_button_monitoring`, exports `__init__` — mergé. Reste si demande : conveniences `lock_left/…`.
 - [x] `docs/protocol.md` : sous-sections `no_wait`, stats/ring/profiler, trame bezier 5-arg, `press/release/double_click/init`, coûts (5/14 queries), règle mode-3/loop + liens `makcu.com/mcp` et `/api/versions` — mergé (`feat/docs-refresh`).
 - [ ] Knobs transport Rust : `ensure_connected` au minimum, `retries`/`error_window`/`candidates` portés ou documentés-intentionnels.
 - [ ] `wait_idle` Rust : param `poll` + wrapper `wait_idle(timeout)` ; test du poll custom.
@@ -79,10 +79,10 @@ Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis
 ### P2 — hygiène / dette
 - [ ] `ruff format --check` en CI ou décision "non enforced" (10 fichiers dérivent ; asymétrie avec `cargo fmt` enforced).
 - [ ] `mypy tests examples` ou typer `parse_datagram`/`apply_action` (union `Action`) — `udp_relay` force des `type: ignore`.
-- [x] `macros.py` edges : `to_rel_deltas([])` → `ValueError`, validation coords au load, `scale_xy` rename, type `Event` — mergé (+ tests). → `ValueError`, validation coords au load, `scale_xy` rename (shadow core `scale_coordinates`), type `Event`.
-- [ ] `__init__.py` : exporter `CLICK_PROFILES`, `CoordSpace` (+ test de surface packaging).
-- [ ] Rust : `MakcuError: PartialEq/Eq/Clone`, jitter-0 `sent()` pin, `list_candidates` tier desc-fallback, note `fire_and_forget` Tx, organisation tests inline vs `tests/` (décider + noter).
-- [ ] `move_now` sémantique V4.097+ (next free USB report) dans `protocol.md` ; re-mesure timings polling 1 ms avec § Hardware.
+- [x] `macros.py` edges : `to_rel_deltas([])` → `ValueError`, validation coords au load, `scale_xy` rename, type `Event` — mergé (+ tests).
+- [x] `__init__.py` : `CLICK_PROFILES`, `CoordSpace` exportés — mergé (test de surface : à ajouter, voir P2 `mypy`/packaging si besoin).
+- [x] Rust : `MakcuError: PartialEq/Eq/Clone`, jitter-0 `sent()` pin, `list_candidates` tier documenté-intentionnel — mergé. Reste : note `fire_and_forget` Tx, organisation tests inline vs `tests/` (décider + noter).
+- [x] `move_now` V4.097+ dans `protocol.md` — mergé (`feat/docs-refresh`) ; re-mesure timings avec § Hardware.
 
 ## Release — séquence exacte (audit 2026-11-11, `release.yml` tag `v*`)
 - [ ] Bump (re-push `0.5.1`/`0.4.1` serait rejeté doublon) : `pyproject.toml` → `0.6.0`, `__init__.__version__` → `0.6.0`, `rust/Cargo.toml` workspace → `0.5.0` + pin `workspace.dependencies makcu_core` (`0.4.0` stale) → `0.5.0`, retitler CHANGELOG Unreleased → `## 0.6.0 (Python) / 0.5.0 (Rust) — <date>`.

@@ -79,7 +79,7 @@ def test_udp_relay_parse():
     assert udp.parse_datagram("CLICK:LEFT") is not None
     assert udp.parse_datagram("MOVE:oops") is None
     assert udp.parse_datagram("km.screen(1,2)") is None
-    assert udp.parse_datagram("PRESS:MIDDLE") is None
+    assert udp.parse_datagram("PRESS:MIDDLE") is not None
 
 
 def test_udp_relay_allows_only_motion():
