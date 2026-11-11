@@ -3,16 +3,19 @@
 
 class MakcuError(Exception):
     """Base error for every MAKCU failure."""
+
     pass
 
 
 class MakcuConnectionError(MakcuError):
     """Serial port unavailable or I/O failure."""
+
     pass
 
 
 class MakcuTimeoutError(MakcuError):
     """No reply within the deadline."""
+
     pass
 
 

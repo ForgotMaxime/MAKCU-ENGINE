@@ -33,6 +33,7 @@ from .types import Button, LockTarget
 
 class BatchBuilder:
     """Coalesced setter batch: one write, one ERR-window read."""
+
     def __init__(self, transport: Transport) -> None:
         self._t = transport
         self._buf = bytearray()

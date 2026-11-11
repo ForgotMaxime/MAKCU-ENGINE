@@ -38,6 +38,7 @@ CLICK_PROFILES: dict[str, tuple[int, int, int, int]] = {
 
 class Mouse:
     """Mouse-only high-level API over any Transport."""
+
     def __init__(self, transport: Transport) -> None:
         self._t = transport
         self._stream_mode: int | None = None
@@ -218,9 +219,7 @@ class Mouse:
         time.sleep(0.02)
         self.down(button)
         try:
-            self.move_smooth(
-                end[0] - start[0], end[1] - start[1], segments, duration / segments
-            )
+            self.move_smooth(end[0] - start[0], end[1] - start[1], segments, duration / segments)
         finally:
             self.up(button)
         time.sleep(0.02)

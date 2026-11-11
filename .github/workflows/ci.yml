@@ -25,6 +25,7 @@ jobs:
           --cov=makcu_engine.abc --cov=makcu_engine.errors
           --cov-report=term --cov-fail-under=85
       - run: ruff check src tests examples
+      - run: ruff format --check src tests examples
       - run: mypy src
 
   rust:

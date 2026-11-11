@@ -23,8 +23,9 @@ def test_detect_all_empty():
 
 def test_wait_for_device_times_out():
     try:
-        MakcuTransport.wait_for_device(timeout_s=0.2, poll_s=0.05,
-                                       candidates=["COM_DOES_NOT_EXIST"])
+        MakcuTransport.wait_for_device(
+            timeout_s=0.2, poll_s=0.05, candidates=["COM_DOES_NOT_EXIST"]
+        )
         raise AssertionError("should raise")
     except MakcuTimeoutError:
         pass

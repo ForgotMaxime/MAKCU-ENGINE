@@ -66,9 +66,7 @@ def scale_xy(events: list[Event], sx: float, sy: float) -> list[Event]:
     """Scale x/y by sx/sy (factors must be > 0)."""
     if sx <= 0 or sy <= 0:
         raise ValueError(f"scale factors must be > 0: {sx}, {sy}")
-    return [
-        {"t_ms": e["t_ms"], "x": round(e["x"] * sx), "y": round(e["y"] * sy)} for e in events
-    ]
+    return [{"t_ms": e["t_ms"], "x": round(e["x"] * sx), "y": round(e["y"] * sy)} for e in events]
 
 
 def adjust_delays(events: list[Event], factor: float) -> list[Event]:

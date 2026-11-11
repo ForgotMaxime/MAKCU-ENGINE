@@ -137,6 +137,7 @@ class _EventLoop:
 
 class MakcuTransport:
     """Exclusive serial transport with optional demux event loop."""
+
     def __init__(self, port: str, baudrate: int, timeout_s: float = config.TIMEOUT_S) -> None:
         self._port = port
         self._baudrate = baudrate
@@ -266,8 +267,9 @@ class MakcuTransport:
         for baud in config.BAUDS:
             ser = None
             try:
-                ser = serial.Serial(port, baudrate=baud, timeout=timeout_s,
-                                    write_timeout=timeout_s, exclusive=True)
+                ser = serial.Serial(
+                    port, baudrate=baud, timeout=timeout_s, write_timeout=timeout_s, exclusive=True
+                )
                 ser.reset_input_buffer()
                 ser.write(build_cmd("km.version"))
                 ser.flush()

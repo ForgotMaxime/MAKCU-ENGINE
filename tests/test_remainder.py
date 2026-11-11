@@ -139,8 +139,11 @@ def test_macro_main_dry_run(tmp_path, capsys):
     p = tmp_path / "m.json"
     p.write_text(
         json.dumps(
-            {"version": 1, "screenLayout": {"w": 10, "h": 10},
-             "events": [{"t_ms": 0, "x": 0, "y": 0}, {"t_ms": 10, "x": 3, "y": 4}]}
+            {
+                "version": 1,
+                "screenLayout": {"w": 10, "h": 10},
+                "events": [{"t_ms": 0, "x": 0, "y": 0}, {"t_ms": 10, "x": 3, "y": 4}],
+            }
         ),
         encoding="utf-8",
     )
@@ -177,9 +180,7 @@ def test_macro_scale_xy_renamed_no_shadow():
     macros = _load_example("macros")
     assert callable(macros.scale_xy)
     assert not hasattr(macros, "scale_coordinates")
-    assert macros.scale_xy([{"t_ms": 0, "x": 4, "y": 6}], 0.5, 0.5) == [
-        {"t_ms": 0, "x": 2, "y": 3}
-    ]
+    assert macros.scale_xy([{"t_ms": 0, "x": 4, "y": 6}], 0.5, 0.5) == [{"t_ms": 0, "x": 2, "y": 3}]
 
 
 def test_macro_replay_still_explicit(tmp_path, capsys):
