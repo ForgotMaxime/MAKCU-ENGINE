@@ -14,8 +14,11 @@ Target firmware: **V4 official (validated against V4.108-class behavior)**. Baud
 - Framing: `km.name(a,b)\r` → reply `<payload>\r\n>>> `
 - Query path blocks on prompt; mutation path is silent-aware (see contract)
 - Mouse API: relative/absolute moves, buttons, wheel, click scheduler, masks, locks, virtual screen
+- Humanisation: `move_smooth`/`move_bezier` (firmware `km.move(dx,dy,seg,cx,cy)` curve), `drag`/`drag_abs`, `click_human_like` + `CLICK_PROFILES`, `double_click`, `init` release-all
+- Observability: `get_stats`/`reset_stats` counters, `get_recent_lines` ring (200 frames), `no_wait` scopes, opt-in per-command profiler, connection callbacks
+- Geometry: `Monitor`/`Bounds` virtual-desktop mapping (`virtual_bounds`/`to_virtual`/`to_local`/`remap_point`), `scale_coordinates` DPI helper
 - Abstractions: `Transport` trait/protocol for dependency injection
-- Testing: pure unit tests + mock transport + hardware-gated integration (read-only + net-zero moves, no clicks) + 85% core coverage gate (measured 96%)
+- Testing: 95 pure unit tests + 8 hardware-gated integration (read-only + net-zero moves, no clicks) + 85% core coverage gate (core modules only; full-tree ~76% — serial/HW paths excluded by design)
 - Full-duplex streaming: background demux reader, `ButtonMonitor` callbacks, hot-plug helpers (`wait_for_device`, `detect_all`)
 
 Full contract: [`docs/protocol.md`](docs/protocol.md).
@@ -36,19 +39,26 @@ CB/
     batch.py               # BatchBuilder — coalesced single-write setter batches
     config.py / errors.py
   tests/
-    test_protocol.py       # pure, no hardware
-    test_mouse_mock.py     # MockTransport, no hardware
-    test_integration.py    # hardware-gated, safe probes only
+    test_protocol.py       # pure framing/parsing/validators
+    test_mouse_mock.py     # MockTransport flows, full surface, batch, monitor
+    test_lifecycle.py      # init/press/release/double_click, silent-release batch
+    test_observe.py        # button/lock observers, connection callbacks
+    test_humanize.py       # bezier/click profiles/jitter/drag_abs/scale_coordinates
+    test_transport_obs.py  # stats/ring/no_wait/geometry roundtrips
+    test_remainder.py      # profiler, udp_relay/macro helpers (example logic)
     test_events.py         # stream/loop/monitor (mock) + loop coexistence (HW)
+    test_integration.py    # hardware-gated safe probes (8 tests)
     test_packaging.py      # version single-source checks
   examples/
     check_mouse.py         # smoke check against real hardware
     benchmark.py           # round-trip / fire-and-forget / batch timings
     smooth.py              # smooth moves + drag square (returns home)
     monitor.py             # interactive button stream + monitor (20 s)
+    udp_relay.py           # UDP-to-serial relay, motion-only (example)
+    macros.py              # JSON macro loader + relative-delta replay (example)
   rust/
-    makcu_core/            # zero-dependency port: error/types/protocol/transport/mock/mouse
-    makcu_serial/          # serial Transport impl (serialport 4) + hardware example
+    makcu_core/            # zero-dependency port: Transport trait (+ NoWaitGuard, TransportStats), BatchBuilder, ButtonMonitor, MockTransport, Mouse<T>, pure protocol/types/error with shared check_* validators
+    makcu_serial/          # serial Transport impl (interior mutability, baud scan, open_auto, hot-plug helpers) + hardware example
 ```
 
 ## Requirements
@@ -114,9 +124,9 @@ candidates = list_candidates()                # ordered port names
 with MakcuTransport(port, baud) as transport: ...
 ```
 
-API surface (`Mouse`): `version/device/echo/set_echo/getpos/screen/moving/wait_idle/button_state/lock_state/move/move_smooth/drag/move_now/moveto/set_screen[confirm]/wheel/silent/down/up/click/set_move_mask/set_wheel_mask/set_button_mask/set_lock/move_ff/batch/autorelease/set_autorelease/heartbeat/api_version/start_button_stream/button_stream_state/stop_button_stream/poll_button_event`. Monitors: `ButtonMonitor` (callbacks + drain).
+API surface (`Mouse`): `version/device/echo/set_echo/getpos/screen/moving/wait_idle` (20 ms default poll), `button_state/get_button_states/get_button_mask/is_pressed`, `lock_state/is_locked/get_all_lock_states` (14 targets), `move/move_smooth/move_bezier/drag/drag_abs/move_now/moveto/set_screen[confirm]/silent/wheel`, `down/press/up/release/click/double_click/click_human_like` (+ `CLICK_PROFILES`)/`move_ff`, `set_move_mask/set_wheel_mask/set_button_mask/set_lock`, `batch/autorelease/set_autorelease/heartbeat/api_version`, `init` (best-effort release-all, never raises), `start_button_stream/button_stream_state/stop_button_stream/poll_button_event`. Monitors: `ButtonMonitor` (`on_change` + `drain`/`pump_once`, explicit `start`/`stop` lifecycle).
 
-Transport: `detect()` → `(port, baud)`, `detect_all()`, `wait_for_device()` (hot-plug), `auto()` (detect + connect), `open(port, baud)`, `probe(port)`, `reconnect()`, `ensure_connected()`, `send_raw()`, `read_line()`, `read_exact()`, `start/stop_event_loop()`, `poll_event()`. Queries retry once on timeout; setters wrap the command name into protocol errors (`batch [...] failed`, `km.move failed`); single 80 ms ERR window. Debug logging via `logging.getLogger("makcu_engine")`.
+Transport: `detect()` → `(port, baud)`, `detect_all()`, `wait_for_device()` (hot-plug), `auto()` (detect + connect), `MakcuTransport(port, baud)` + `connect()`, `probe(port)`, `connect()`/`close()`/`reconnect()`/`ensure_connected()`, `is_connected`, `on_connection_change()`/`remove_connection_callback()`, `get_stats()`/`reset_stats()`, `get_recent_lines()` (200-frame ring), `no_wait()` scopes, profiler (`enable/disable_profiling`, `profiling_enabled`, `get_profile`/`reset_profile`), `fire_and_forget()`, `send_raw()`, `read_line()`/`read_exact()`, `start/stop_event_loop()`, `poll_event()`. Queries retry once on timeout; setters wrap the command name into protocol errors (`batch [...] failed`, `km.move failed`); single 80 ms ERR window. Debug logging via `logging.getLogger("makcu_engine")`.
 
 Batching (one write, one ERR window — same setter set and validation as `Mouse`):
 
@@ -189,7 +199,7 @@ Lower level: `MakcuTransport::list_candidates()` (CH343 VID/PID first), `MakcuTr
 
 Crates:
 
-- `makcu_core` - zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`), `BatchBuilder`, `ButtonMonitor`, `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types` with shared `check_*` validators. 19 unit tests (+ 7 hardware-gated, ignored in CI).
+- `makcu_core` - zero dependencies. `Transport` trait (+ blanket `impl Transport for &T`, `NoWaitGuard`, `TransportStats`), `BatchBuilder`, `ButtonMonitor`, `MockTransport`, `Mouse<T: Transport>`, pure `protocol`/`types` with shared `check_*` validators. 40 unit tests (+ 7 hardware-gated, ignored in CI).
 - `makcu_serial` — `Transport for MakcuTransport` over `serialport`. Interior mutability via `Mutex`, `read_until` with 10 ms polls under caller deadline (never exceeds the ERR window), single-critical-section `send_raw`, open retry with backoff.
 
 ## Hardware Validation
@@ -201,10 +211,8 @@ Crates:
 | `move(+2,0)+move(-2,0)` net-zero | pass | pass | position unchanged |
 | batch full-set + `autorelease` roundtrip | pass (unit + HW) | pass (unit + HW) | firmware answers `autorelease` |
 | rejected-setter ERR window | unit | unit + HW-timed < 500 ms | `hw_setter_error_window_fast` (ignored) |
-| Unit (framing, parsing, validation, mock flow, batch, stream, monitor, smooth/drag, packaging) | 35 passed* | 19 passed | + 7 HW Rust (ignored) |
+| Unit (framing, parsing, validation, mock flow, batch, stream, monitor, smooth/drag, humanize, observers, stats/ring/no_wait, profiler, lifecycle, packaging) | 95 passed | 40 passed | + 8 HW Python (gated) / 7 HW Rust (ignored) |
 | Lints | `ruff + mypy --strict` | `clippy -D warnings`, `fmt` | clean |
-
-\* 43 with 8 hardware-gated tests and 2 packaging tests.
 
 Integration tests never click, never scroll, and never change persistent settings. Only `COM4` is touched; `COM3` (virtual, not ready) and `COM5/COM6` (ESP32-S3, `Unknown`) are left alone.
 
@@ -218,6 +226,21 @@ Integration tests never click, never scroll, and never change persistent setting
 | `MakcuProtocolError` (+ `ValueError`) | `MakcuError::{Protocol, InvalidArgument}` | validation/parsing errors coherent per language idiom |
 | `protocol.check_*` validators | `protocol::check_*` validators | single definition used by `Mouse` and `BatchBuilder` |
 | `BatchBuilder` full setter set | `BatchBuilder` full setter set | identical coverage, identical validation |
+| `BatchBuilder.move(dx, dy)` | `BatchBuilder::move_rel(dx, dy)` | `move` is a keyword in Rust (same reason as `Mouse::move_rel`) |
+| `wait_idle(timeout_s, poll_s)` floats | `wait_idle(timeout: Duration)` (20 ms fixed poll) | seconds become `Duration`; the poll step is fixed in Rust |
+| `double_click(b, gap_s)` float | `double_click(b, gap: Duration)` | negative gaps are unrepresentable in Rust (Python rejects `gap_s < 0`) |
+| `move_smooth/drag/drag_abs` floats + stdlib `random` | same names with `Duration` + caller-supplied `rng` sampler | core stays zero-dependency; deterministic tests |
+| `get_button_states()` dict | `[(Button, ButtonOwnership); 5]` array | fixed-size shape instead of a dict |
+| `get_all_lock_states()` dict | `Vec<(&str, bool)>` in `LockTarget::ALL` order | same 14 targets, same one-query-per-target cost |
+| `move_smooth` `round()` (banker) | integer `dx*i/steps` truncation | ±1 on exact ties; geometry uses `f64::round` (half-away) vs Python banker — ties can differ by 1 |
+| `move_bezier` ctrl default `dx // 2` | `dx.div_euclid(2)` | floor division on both sides, deliberately matched |
+| `with t.no_wait():` context manager | `t.no_wait()` → `NoWaitGuard` (RAII) / `with_no_wait(f)` | nesting supported on both; queries still block |
+| `get_stats()` dict | `get_stats()` → `TransportStats` struct | same keys (`tx_bytes/cmds_sent/reconnects/avg_rtt_ms/last_error`) |
+| `MockTransport.is_connected` property | `is_connected()` method | attr-style vs call-style; both backed by a bool field |
+| `connect()` always reopens (guard lives in `__enter__`) | `connect()` idempotent no-op when open | Python mock `connect()` always notifies `True`, like Rust |
+| per-command profiler (`enable/get/reset_profile`) | absent in Rust (this snapshot: no `profil*` under `rust/`) | counting-only port; `TransportStats`/ring/`no_wait`/callbacks present |
+| setter errors `device ERR: …` / `<name> failed: …` | serial `rejected: …` / `<name> failed: …` | same wrap shape (`batch […] failed: …` too); rejection text differs (Rust mock mirrors Python's `device ERR`) |
+| connection callbacks: raising one is logged, rest run | no isolation: a panic unwinds, remaining callbacks skipped | keep Rust callbacks trivial — never panic, never re-enter connect/close |
 | `errors.ConnectionError` shadowing builtin | `MakcuConnectionError` etc. | prefixed to avoid shadowing `std` |
 | `config.PROMPT = b">>> "` | `makcu_serial::PROMPT` | single prompt constant, no duplication |
 
