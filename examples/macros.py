@@ -5,7 +5,7 @@ Macro file format::
     {"version": 1, "screenLayout": {"w": 1920, "h": 1080},
      "events": [{"t_ms": 0, "x": 100, "y": 200}, ...]}
 
-Helpers are pure (no I/O): ``dedupe_moves``, ``scale_coordinates``,
+Helpers are pure (no I/O): ``dedupe_moves``, ``scale_xy``,
 ``adjust_delays``, ``to_rel_deltas``. Replay uses relative ``km.move``
 deltas only and never changes persistent settings. By default prints
 the plan; ``--replay`` executes it on an explicit ``--port``.
@@ -17,9 +17,15 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
-Event = dict[str, int]
+
+class Event(TypedDict):
+    """One macro event: timestamp plus virtual-screen coordinates."""
+
+    t_ms: int
+    x: int
+    y: int
 
 
 def load_macro(path: str | Path) -> dict[str, Any]:
@@ -34,10 +40,14 @@ def load_macro(path: str | Path) -> dict[str, Any]:
         if not isinstance(e, dict):
             raise ValueError(f"bad event: {e!r}")
         for k in ("t_ms", "x", "y"):
-            if not isinstance(e.get(k), int):
+            if not isinstance(e.get(k), int) or isinstance(e.get(k), bool):
                 raise ValueError(f"event {e!r} missing int {k}")
-            if k == "t_ms" and e[k] < 0:
-                raise ValueError(f"negative t_ms: {e!r}")
+        if e["t_ms"] < 0:
+            raise ValueError(f"negative t_ms: {e!r}")
+        if not 0 <= e["x"] <= 32767:
+            raise ValueError(f"x out of range 0..32767: {e!r}")
+        if not 0 <= e["y"] <= 32767:
+            raise ValueError(f"y out of range 0..32767: {e!r}")
     data["events"] = sorted(events, key=lambda e: int(e["t_ms"]))
     return data
 
@@ -52,7 +62,7 @@ def dedupe_moves(events: list[Event]) -> list[Event]:
     return out
 
 
-def scale_coordinates(events: list[Event], sx: float, sy: float) -> list[Event]:
+def scale_xy(events: list[Event], sx: float, sy: float) -> list[Event]:
     """Scale x/y by sx/sy (factors must be > 0)."""
     if sx <= 0 or sy <= 0:
         raise ValueError(f"scale factors must be > 0: {sx}, {sy}")
@@ -80,6 +90,8 @@ def adjust_delays(events: list[Event], factor: float) -> list[Event]:
 
 def to_rel_deltas(events: list[Event]) -> list[tuple[int, int, int]]:
     """Convert absolute events to [(dx, dy, wait_ms)] relative deltas."""
+    if not events:
+        raise ValueError("to_rel_deltas needs a non-empty events list")
     out: list[tuple[int, int, int]] = []
     px, py, pt = events[0]["x"], events[0]["y"], events[0]["t_ms"]
     out.append((0, 0, 0))
@@ -120,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.scale is not None:
         try:
             sx_s, sy_s = args.scale.split(",", 1)
-            events = scale_coordinates(events, float(sx_s), float(sy_s))
+            events = scale_xy(events, float(sx_s), float(sy_s))
         except ValueError as e:
             print(f"bad --scale: {e}")
             return 2
