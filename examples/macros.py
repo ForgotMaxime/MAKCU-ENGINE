@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Any, TypedDict
 
+from makcu_engine.errors import MakcuProtocolError
+
 
 class Event(TypedDict):
     """One macro event: timestamp plus virtual-screen coordinates."""
@@ -32,22 +34,22 @@ def load_macro(path: str | Path) -> dict[str, Any]:
     """Load and validate a macro JSON file."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError("macro root must be an object")
+        raise MakcuProtocolError(f"macro root needs an object: {data!r}")
     events = data.get("events")
     if not isinstance(events, list) or not events:
-        raise ValueError("macro needs a non-empty events list")
+        raise MakcuProtocolError(f"events needs at least one: {data.get('events')!r}")
     for e in events:
         if not isinstance(e, dict):
-            raise ValueError(f"bad event: {e!r}")
+            raise MakcuProtocolError(f"event needs t_ms/x/y ints: {e!r}")
         for k in ("t_ms", "x", "y"):
             if not isinstance(e.get(k), int) or isinstance(e.get(k), bool):
-                raise ValueError(f"event {e!r} missing int {k}")
+                raise MakcuProtocolError(f"{k} needs int: {e!r}")
         if e["t_ms"] < 0:
-            raise ValueError(f"negative t_ms: {e!r}")
+            raise MakcuProtocolError(f"t_ms out of range: {e!r}")
         if not 0 <= e["x"] <= 32767:
-            raise ValueError(f"x out of range 0..32767: {e!r}")
+            raise MakcuProtocolError(f"x out of range 0..32767: {e!r}")
         if not 0 <= e["y"] <= 32767:
-            raise ValueError(f"y out of range 0..32767: {e!r}")
+            raise MakcuProtocolError(f"y out of range 0..32767: {e!r}")
     data["events"] = sorted(events, key=lambda e: int(e["t_ms"]))
     return data
 
@@ -64,15 +66,17 @@ def dedupe_moves(events: list[Event]) -> list[Event]:
 
 def scale_xy(events: list[Event], sx: float, sy: float) -> list[Event]:
     """Scale x/y by sx/sy (factors must be > 0)."""
-    if sx <= 0 or sy <= 0:
-        raise ValueError(f"scale factors must be > 0: {sx}, {sy}")
+    if sx <= 0:
+        raise MakcuProtocolError(f"sx out of range: {sx}")
+    if sy <= 0:
+        raise MakcuProtocolError(f"sy out of range: {sy}")
     return [{"t_ms": e["t_ms"], "x": round(e["x"] * sx), "y": round(e["y"] * sy)} for e in events]
 
 
 def adjust_delays(events: list[Event], factor: float) -> list[Event]:
     """Scale inter-event delays by factor (0.25..4); t_ms origin kept at 0."""
     if not 0.25 <= factor <= 4.0:
-        raise ValueError(f"factor out of range 0.25-4: {factor}")
+        raise MakcuProtocolError(f"factor out of range 0.25-4: {factor}")
     if not events:
         return []
     base = events[0]["t_ms"]
@@ -89,7 +93,7 @@ def adjust_delays(events: list[Event], factor: float) -> list[Event]:
 def to_rel_deltas(events: list[Event]) -> list[tuple[int, int, int]]:
     """Convert absolute events to [(dx, dy, wait_ms)] relative deltas."""
     if not events:
-        raise ValueError("to_rel_deltas needs a non-empty events list")
+        raise MakcuProtocolError(f"events needs at least one: {events!r}")
     out: list[tuple[int, int, int]] = []
     px, py, pt = events[0]["x"], events[0]["y"], events[0]["t_ms"]
     out.append((0, 0, 0))

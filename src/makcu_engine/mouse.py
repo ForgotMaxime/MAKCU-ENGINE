@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import Sequence
 
 from .abc import Transport
 from .batch import BatchBuilder
@@ -145,11 +146,41 @@ class Mouse:
         check_xy(x, y)
         self._t.set("km.moveto", x, y)
 
+    def move_abs(self, target: tuple[int, int], speed: float = 1.0, wait_ms: float = 2) -> None:
+        """Step toward an absolute target using km.getpos feedback (portable).
+
+        Closed loop on this handle's own getpos estimate: no ctypes or
+        GetCursorPos, so it works on any platform. speed is clamped to
+        (0, 1] (1.0 jumps the full remaining delta); the loop stops once
+        |dx| and |dy| are both <= 1 (anti-overflick guard).
+        """
+        check_xy(*target)
+        if speed <= 0:
+            raise MakcuProtocolError(f"speed out of range: {speed}")
+        if wait_ms < 0:
+            raise MakcuProtocolError(f"wait_ms out of range: {wait_ms}")
+        factor = min(speed, 1.0)
+        tx, ty = target
+        while True:
+            pos = self.getpos()
+            dx, dy = tx - pos.x, ty - pos.y
+            if abs(dx) <= 1 and abs(dy) <= 1:
+                return
+            step_x = int(round(dx * factor)) if dx else 0
+            step_y = int(round(dy * factor)) if dy else 0
+            if dx and not step_x:
+                step_x = 1 if dx > 0 else -1
+            if dy and not step_y:
+                step_y = 1 if dy > 0 else -1
+            self.move(max(-32768, min(32767, step_x)), max(-32768, min(32767, step_y)))
+            if wait_ms:
+                time.sleep(wait_ms / 1000.0)
+
     def set_screen(self, width: int, height: int, *, confirm: bool = False) -> None:
         """Change the virtual screen. Requires confirm=True: this moves the
         tracked pointer origin on a live system."""
         if not confirm:
-            raise MakcuProtocolError("set_screen needs confirm=True (changes live tracking)")
+            raise MakcuProtocolError(f"confirm needs True (changes live tracking): {confirm}")
         check_screen_size(width, height)
         self._t.set("km.screen", width, height)
 
@@ -224,6 +255,25 @@ class Mouse:
             self.up(button)
         time.sleep(0.02)
 
+    def move_pattern(self, points: Sequence[tuple[int, int]], step_ms: float = 2) -> None:
+        """Relative waypoint moves with a fixed sleep between steps (host-side only).
+
+        Each waypoint is one km.move delta frame; no firmware Bezier involved.
+        """
+        pts = list(points)
+        if not pts:
+            raise MakcuProtocolError(f"points needs at least one: {pts!r}")
+        if step_ms < 0:
+            raise MakcuProtocolError(f"step_ms out of range: {step_ms}")
+        for i, pt in enumerate(pts):
+            try:
+                dx, dy = pt
+            except (TypeError, ValueError) as e:
+                raise MakcuProtocolError(f"points entry needs (dx, dy): {pt!r}") from e
+            self.move(dx, dy)
+            if step_ms and i < len(pts) - 1:
+                time.sleep(step_ms / 1000.0)
+
     def silent(self, x: int, y: int) -> None:
         """Move, silent left click, move back."""
         check_xy(x, y)
@@ -284,7 +334,7 @@ class Mouse:
         the global random module is used.
         """
         if profile not in CLICK_PROFILES:
-            raise MakcuProtocolError(f"unknown click profile: {profile!r}")
+            raise MakcuProtocolError(f"profile unknown: {profile!r}")
         if not 1 <= count <= 255:
             raise MakcuProtocolError(f"count out of range: {count}")
         if jitter < 0:
@@ -300,6 +350,19 @@ class Mouse:
             self.up(button)
             if i < count - 1:
                 time.sleep(uniform(wait_min, wait_max) / 1000.0)
+
+    def click_sequence(self, button: Button, holds_ms: Sequence[int]) -> None:
+        """One scheduled click per hold duration (host-side loop, no firmware sequence).
+
+        Each entry follows click() hold rules (0 = firmware-random hold).
+        """
+        holds = list(holds_ms)
+        if not holds:
+            raise MakcuProtocolError(f"holds_ms needs at least one: {holds!r}")
+        for hold in holds:
+            if not isinstance(hold, int):
+                raise MakcuProtocolError(f"holds_ms entry out of range: {hold!r}")
+            self.click(button, 1, hold)
 
     def init(self) -> None:
         """Best-effort release of all buttons; stop the button stream if running."""
@@ -343,17 +406,33 @@ class Mouse:
         return BatchBuilder(self._t)
 
     # --- test-build features (V4.103+, absent from older firmware: ERR) ---
+    def requires_api(self, n: int) -> None:
+        """Raise unless the firmware api_version is at least n.
+
+        Firmware without km.api_version (pre-V4.105, ERR reply) counts as 0.
+        """
+        if n < 0:
+            raise MakcuProtocolError(f"n out of range: {n}")
+        try:
+            current = self.api_version()
+        except ValueError:
+            current = 0
+        if current < n:
+            raise MakcuProtocolError(f"api_version too old: have {current}, need {n}")
+
     def autorelease(self) -> int:
         """Injected-button autorelease timeout in ms (V4.103+)."""
         return int(self._t.query("km.autorelease"))
 
     def set_autorelease(self, timeout_ms: int) -> None:
-        """Set the autorelease timeout, 0 disables (V4.103+)."""
+        """Set the autorelease timeout, 0 disables (V4.103+, api_version 1+)."""
         check_autorelease(timeout_ms)
+        self.requires_api(1)
         self._t.set("km.autorelease", timeout_ms)
 
     def heartbeat(self) -> None:
-        """Restart the autorelease timer (V4.103+)."""
+        """Restart the autorelease timer (V4.103+, api_version 1+)."""
+        self.requires_api(1)
         self._t.set("km.heartbeat")
 
     def api_version(self) -> int:
