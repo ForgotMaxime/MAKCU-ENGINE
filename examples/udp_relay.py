@@ -4,8 +4,8 @@ Listens on UDP :5005 and relays a tiny text protocol to the MAKCU:
 
 - ``MOVE:dx,dy`` -> relative move
 - ``WHEEL:n`` -> wheel delta
-- ``PRESS:LEFT|RIGHT`` / ``RELEASE:LEFT|RIGHT`` -> button down/up
-- ``CLICK:LEFT|RIGHT`` -> scheduled click
+- ``PRESS:LEFT|RIGHT|MIDDLE|SIDE1|SIDE2`` / ``RELEASE:...`` -> button down/up
+- ``CLICK:LEFT|RIGHT|MIDDLE|SIDE1|SIDE2`` -> scheduled click
 - ``PING`` -> replies ``PONG`` without touching serial
 
 Only move/wheel/press/release commands are ever forwarded; settings,
@@ -24,7 +24,13 @@ from makcu_engine.types import Button
 
 LISTEN_PORT = 5005
 
-_BUTTONS = {"LEFT": Button.LEFT, "RIGHT": Button.RIGHT}
+_BUTTONS = {
+    "LEFT": Button.LEFT,
+    "RIGHT": Button.RIGHT,
+    "MIDDLE": Button.MIDDLE,
+    "SIDE1": Button.SIDE1,
+    "SIDE2": Button.SIDE2,
+}
 
 
 def parse_datagram(text: str) -> tuple[str, object] | None:

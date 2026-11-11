@@ -72,6 +72,8 @@ class Mouse:
 
     def wait_idle(self, timeout_s: float = 2.0, poll_s: float = 0.02) -> bool:
         """Block until no injected movement remains. True if idle, False on timeout."""
+        if poll_s < 0:
+            raise MakcuProtocolError(f"poll_s out of range: {poll_s}")
         deadline = time.monotonic() + timeout_s
         while True:
             if not self.moving():
@@ -81,7 +83,11 @@ class Mouse:
             time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
 
     def button_state(self, button: Button) -> ButtonOwnership:
-        """Physical/injected ownership of a button."""
+        """Injected/physical ownership of a button.
+
+        Returns ButtonOwnership NONE=0, PHYSICAL=1, INJECTED=2, or BOTH=3,
+        covering the full physical/injected tri-state (plus both).
+        """
         return ButtonOwnership(int(self._t.query(f"km.{button_method(button)}")))
 
     def get_button_states(self) -> dict[Button, ButtonOwnership]:
@@ -102,7 +108,11 @@ class Mouse:
         return mask
 
     def is_pressed(self, button: Button) -> bool:
-        """Whether injected code currently holds a button. Stateless single query."""
+        """Whether injected code currently holds a button. Stateless single query.
+
+        True for INJECTED (2) or BOTH (3), False for NONE (0) or
+        PHYSICAL-only (1). Takes a Button; for lock targets see is_locked.
+        """
         return self.button_state(button) in (ButtonOwnership.INJECTED, ButtonOwnership.BOTH)
 
     def lock_state(self, target: LockTarget) -> bool:
@@ -110,7 +120,11 @@ class Mouse:
         return self._t.query(f"km.lock_{target.value}") == "1"
 
     def is_locked(self, target: LockTarget) -> bool:
-        """Whether a lock target is currently locked. Stateless single query."""
+        """Whether a lock target is currently locked. Stateless single query.
+
+        Takes a LockTarget (km.lock_*); for injected button holds on a
+        Button see is_pressed.
+        """
         return self.lock_state(target)
 
     def get_all_lock_states(self) -> dict[str, bool]:
@@ -141,6 +155,10 @@ class Mouse:
     def wheel(self, delta: int) -> None:
         """Injected wheel delta (i16)."""
         self._t.set("km.wheel", clamp_i16(delta))
+
+    def scroll(self, delta: int) -> None:
+        """Injected wheel delta (alias of wheel)."""
+        self.wheel(delta)
 
     def move_smooth(self, dx: int, dy: int, steps: int = 10, step_s: float = 0.005) -> None:
         """Split a move into steps so the firmware path looks drawn, not jumped."""
@@ -191,6 +209,8 @@ class Mouse:
         """Absolute drag: moveto(start), press, smooth-move, release."""
         if duration <= 0:
             raise MakcuProtocolError(f"duration out of range: {duration}")
+        if duration > 60:
+            raise MakcuProtocolError(f"duration out of range: {duration}")
         check_xy(*start)
         check_xy(*end)
         segments = max(10, int(duration * 30))
@@ -227,7 +247,15 @@ class Mouse:
         self.up(button, silent_release)
 
     def click(self, button: Button, count: int = 1, hold_ms: int | None = None) -> None:
-        """Scheduled clicks with optional hold time."""
+        """Scheduled clicks with optional hold time.
+
+        hold_ms=None sends km.click(b,count); hold_ms=0 passes 0 through so
+        the firmware picks a random 35-75 ms hold (binary CLICK spec).
+        """
+        if hold_ms == 0:
+            check_click(button.value, count, None)
+            self._t.set("km.click", button.value, count, 0)
+            return
         check_click(button.value, count, hold_ms)
         if hold_ms is None:
             self._t.set("km.click", button.value, count)
@@ -244,9 +272,18 @@ class Mouse:
         self.click(button)
 
     def click_human_like(
-        self, button: Button, count: int = 1, profile: str = "normal", jitter: int = 0
+        self,
+        button: Button,
+        count: int = 1,
+        profile: str = "normal",
+        jitter: int = 0,
+        rng: random.Random | None = None,
     ) -> None:
-        """Human-like clicks: randomized hold/inter-click sleeps per profile."""
+        """Human-like clicks: randomized hold/inter-click sleeps per profile.
+
+        rng is an optional random.Random for reproducible seeds; when None
+        the global random module is used.
+        """
         if profile not in CLICK_PROFILES:
             raise MakcuProtocolError(f"unknown click profile: {profile!r}")
         if not 1 <= count <= 255:
@@ -254,14 +291,16 @@ class Mouse:
         if jitter < 0:
             raise MakcuProtocolError(f"jitter out of range: {jitter}")
         down_min, down_max, wait_min, wait_max = CLICK_PROFILES[profile]
+        randint = rng.randint if rng is not None else random.randint
+        uniform = rng.uniform if rng is not None else random.uniform
         for i in range(count):
             if jitter:
-                self.move(random.randint(-jitter, jitter), random.randint(-jitter, jitter))
+                self.move(randint(-jitter, jitter), randint(-jitter, jitter))
             self.down(button)
-            time.sleep(random.uniform(down_min, down_max) / 1000.0)
+            time.sleep(uniform(down_min, down_max) / 1000.0)
             self.up(button)
             if i < count - 1:
-                time.sleep(random.uniform(wait_min, wait_max) / 1000.0)
+                time.sleep(uniform(wait_min, wait_max) / 1000.0)
 
     def init(self) -> None:
         """Best-effort release of all buttons; stop the button stream if running."""
@@ -329,9 +368,16 @@ class Mouse:
         self._t.set("km.buttons", mode)
         self._stream_mode = mode
 
+    def enable_button_monitoring(self, mode: int = 1) -> None:
+        """Enable button-change streaming (alias of start_button_stream)."""
+        self.start_button_stream(mode)
+
     def button_stream_state(self) -> bool:
-        """True while the button stream is enabled on the device."""
-        return self._t.query("km.buttons").strip() == "1"
+        """True while the button stream is enabled on the device.
+
+        Any non-"0" km.buttons reply counts, covering modes 1-3.
+        """
+        return self._t.query("km.buttons").strip() != "0"
 
     def stop_button_stream(self) -> None:
         """Disable button-change streaming."""
