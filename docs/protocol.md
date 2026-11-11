@@ -39,3 +39,15 @@ Virtual screen defaults to `1920x1080`. `getpos` is an estimate from
 accepted host reports. Prefer 4M for move+click combos: a 17-byte
 `km.move(100,100)\r` takes ~42 µs at 4M vs ~1.48 ms at 115200,
 over the 1 ms USB poll interval.
+
+## Out-of-scope verdicts (ASCII-only driver)
+
+- Interpolation `0x1F` has no `km.*` text name: the ASCII protocol
+  exposes no interpolation command, so it is unsupported by this driver.
+- Binary snapshots `0x55`/`0x56` are out of scope: this driver speaks
+  ASCII `km.*` frames only, never raw binary opcodes.
+- Wheel telemetry `0x20` is out of scope: no `km.*` text equivalent
+  exists; wheel state travels via `km.wheel` injection only.
+- Mode-3 legacy poll confirmed: bare single-byte frames carry no
+  terminator, so mode 3 stays on the `read_exact(1)` poll path and
+  must not run concurrently with queries (see full-duplex above).
