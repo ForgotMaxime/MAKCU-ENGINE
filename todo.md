@@ -70,6 +70,7 @@ Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis
 - [ ] `api_version()` comme capability gate (au lieu de tolérance de réponse), les deux stacks — S.
 - [ ] `move_abs` portable bouclé sur `getpos()` (sans ctypes, clean-room, mêmes maths) — M.
 - [ ] `move_pattern` waypoints + `click_sequence` (idée MIT, pas de copie) — M.
+- [ ] Spike `windmouse-rs` 0.1.1 (MIT, idée seule — pas de dép, core zéro-dép) : évaluer l'algo vent/gravité (param G/W/M/D, `max_step`, `target_area`) comme référence clean-room d'un planificateur `move_wind`, mêmes maths Python+Rust ; avec le caveat détectabilité (variation naturelle, pas d'indétectabilité — cside 2026). — S/M.
 - [ ] Spike planificateur SigmaDrift (MIT : Fitts + sigma-lognormal, replay deltas) avec caveat détectabilité — L.
 - [ ] Comparaison reconnect/backoff K4HVH (writer coalescent + monitor, `Send+Sync`) — n'adopter que mesuré — S.
 - [ ] `km.catch_m*` : probe HW de capacité d'abord, pas d'API avant — S/M (idée MIT, V3 exclu sauf preuve).
@@ -110,4 +111,4 @@ Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis
 
 ## Non-goals explicites (ne pas ajouter)
 Clavier (`down/up/string/remap`), controller, `flick`/`RAW_BATCH` (test-only), legacy V3 (`turbo/remap/swap_xy/catch_ml…` — `pymakcu.catch_button` est du V3), binaire `MAK_API`/`DE AD`, firmware custom (`medius`, `MAKCM`), flash, GUI.
-Ajouts 2026-11-11 : WindMouse (GPL-3.0-only, incompatible MIT/Apache + détecté 97–100 % @ ≤1 % FPR — cside 2026) ; `mak-suite`/MAKXD (autre famille de device) ; async API ; auto-reconnect-dans-query (manuel `reconnect/ensure_connected` suffit).
+Ajouts 2026-11-11 : paquet PyPI `windmouse` (GPL-3.0-only → incompatible MIT/Apache, ne pas porter ; de toute façon détecté 97–100 % @ ≤1 % FPR — cside 2026) — MAIS la réimplémentation Rust `windmouse-rs` 0.1.1 (`MostlyFinished`, crates.io) est MIT : utilisable comme référence d'idée seule (jamais de copie, jamais de dépendance — core zéro-dép), voir item P1 ; `mak-suite`/MAKXD (autre famille de device) ; async API ; auto-reconnect-dans-query (manuel `reconnect/ensure_connected` suffit).
