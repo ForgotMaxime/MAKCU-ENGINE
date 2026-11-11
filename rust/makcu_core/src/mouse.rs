@@ -91,6 +91,15 @@ fn lookup_profile(name: &str) -> Result<ClickProfile> {
         .ok_or_else(|| MakcuError::InvalidArgument(format!("unknown click profile: {name:?}")))
 }
 
+/// Python-compatible `round()` for one interpolated cumulative step.
+///
+/// CPython `round(float)` rounds ties to even; Rust `f64::round` rounds ties
+/// away from zero. `f64::round_ties_even` matches CPython on the same `f64`
+/// quotient (both are IEEE-754 doubles), e.g. `-2.5` goes to `-2`.
+fn py_round(v: f64) -> i32 {
+    v.round_ties_even() as i32
+}
+
 /// Mouse-only high-level API over any [`Transport`].
 pub struct Mouse<T: Transport> {
     t: T,
@@ -269,14 +278,26 @@ impl<T: Transport> Mouse<T> {
     }
 
     /// Split a relative move into steps so the path looks drawn, not jumped.
+    ///
+    /// Cumulative targets use Python-compatible `round()` (ties go to even,
+    /// via `f64::round_ties_even`): each step sends the delta between
+    /// successive rounded cumulative positions, so the deltas always sum to
+    /// exactly `(dx, dy)`. This differs from plain integer truncation
+    /// (`dx * i / steps`), which skews negative moves toward zero, and from
+    /// Rust `f64::round` (half away from zero): exact `.5` ties round to the
+    /// even neighbor here, e.g. `-2.5` goes to `-2`, matching CPython.
+    /// Residual differences vs CPython can only come from platform float
+    /// formatting edge cases: the quotient is computed as an `f64` division
+    /// (same IEEE-754 double as CPython) and rounded half-to-even, so
+    /// representable values match bit-for-bit.
     pub fn move_smooth(&self, dx: i32, dy: i32, steps: u32, step: Duration) -> Result<()> {
         if steps < 1 {
             return Err(MakcuError::InvalidArgument(format!("steps: {steps}")));
         }
         let (mut px, mut py) = (0, 0);
         for i in 1..=steps {
-            let x = (dx as i64 * i as i64 / steps as i64) as i32;
-            let y = (dy as i64 * i as i64 / steps as i64) as i32;
+            let x = py_round(dx as f64 * f64::from(i) / f64::from(steps));
+            let y = py_round(dy as f64 * f64::from(i) / f64::from(steps));
             self.move_rel(x - px, y - py)?;
             px = x;
             py = y;
@@ -712,13 +733,35 @@ mod tests {
             total.1 += it.next().unwrap().parse::<i32>().unwrap();
         }
         assert_eq!(total, (10, 4));
-        assert!(m.move_smooth(1, 1, 0, Duration::ZERO).is_err());
+        assert_eq!(
+            m.move_smooth(1, 1, 0, Duration::ZERO),
+            Err(MakcuError::InvalidArgument("steps: 0".into()))
+        );
         let t2 = MockTransport::new();
         let m2 = Mouse::new(&t2);
         m2.drag(Button::Side1, 6, 0, 3, Duration::ZERO).unwrap();
         let sent = t2.sent();
         assert_eq!(sent[0], "km.ms1(1)");
         assert_eq!(sent[sent.len() - 1], "km.ms1(0)");
+    }
+
+    #[test]
+    fn smooth_negative_deltas_match_python_round() {
+        use std::time::Duration;
+        // Python round() ties-to-even: round(-1.5) == -2, round(-2.5) == -2.
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        m.move_smooth(-3, -5, 2, Duration::ZERO).unwrap();
+        assert_eq!(t.sent(), vec!["km.move(-2,-2)", "km.move(-1,-3)"]);
+        // Deltas always sum to exactly the requested total.
+        let mut total = (0, 0);
+        for c in t.sent() {
+            let inner = &c["km.move(".len()..c.len() - 1];
+            let mut it = inner.split(',');
+            total.0 += it.next().unwrap().parse::<i32>().unwrap();
+            total.1 += it.next().unwrap().parse::<i32>().unwrap();
+        }
+        assert_eq!(total, (-3, -5));
     }
 
     #[test]
@@ -884,18 +927,38 @@ mod tests {
         let t = MockTransport::new();
         let m = Mouse::new(&t);
         let mut zero = || 0.0;
-        assert!(m
-            .click_human_like(Button::Left, 1, "nope", 0, &mut zero)
-            .is_err());
-        assert!(m
-            .click_human_like(Button::Left, 0, "normal", 0, &mut zero)
-            .is_err());
-        assert!(m
-            .click_human_like(Button::Left, 1, "normal", -1, &mut zero)
-            .is_err());
+        assert_eq!(
+            m.click_human_like(Button::Left, 1, "nope", 0, &mut zero),
+            Err(MakcuError::InvalidArgument(
+                "unknown click profile: \"nope\"".into()
+            ))
+        );
+        assert_eq!(
+            m.click_human_like(Button::Left, 0, "normal", 0, &mut zero),
+            Err(MakcuError::InvalidArgument("count: 0".into()))
+        );
+        assert_eq!(
+            m.click_human_like(Button::Left, 1, "normal", -1, &mut zero),
+            Err(MakcuError::InvalidArgument("jitter: -1".into()))
+        );
         m.click_human_like(Button::Left, 1, "fast", 0, &mut zero)
             .unwrap();
         assert_eq!(t.sent(), vec!["km.left(1)", "km.left(0)"]);
+    }
+
+    #[test]
+    fn human_like_jitter_zero_sends_only_down_up() {
+        // With jitter == 0 no move_rel frames may appear: the exact wire
+        // sequence is one down + one up per click.
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        let mut zero = || 0.0;
+        m.click_human_like(Button::Left, 2, "fast", 0, &mut zero)
+            .unwrap();
+        assert_eq!(
+            t.sent(),
+            vec!["km.left(1)", "km.left(0)", "km.left(1)", "km.left(0)"]
+        );
     }
 
     #[test]

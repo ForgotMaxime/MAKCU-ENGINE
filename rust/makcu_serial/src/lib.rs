@@ -5,6 +5,6 @@ pub mod serial;
 
 pub use makcu_core::{
     BatchBuilder, Button, ButtonOwnership, ConnectionCallback, DeviceInfo, LockTarget, Mouse,
-    NoWaitGuard, Position, Screen, Transport, TransportStats, RECENT_CAPACITY,
+    NoWaitGuard, Position, ProfileEntry, Screen, Transport, TransportStats, RECENT_CAPACITY,
 };
 pub use serial::MakcuTransport;

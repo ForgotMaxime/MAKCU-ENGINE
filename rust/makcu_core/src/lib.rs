@@ -15,7 +15,9 @@ pub use batch::BatchBuilder;
 pub use error::{MakcuError, Result};
 pub use mock::MockTransport;
 pub use mouse::{ClickProfile, Mouse, CLICK_PROFILES};
-pub use transport::{ConnectionCallback, NoWaitGuard, Transport, TransportStats, RECENT_CAPACITY};
+pub use transport::{
+    ConnectionCallback, NoWaitGuard, ProfileEntry, Transport, TransportStats, RECENT_CAPACITY,
+};
 pub use types::{
     remap_point, scale_coordinates, to_local, to_virtual, virtual_bounds, Bounds, Button,
     ButtonOwnership, CoordSpace, DeviceInfo, LockTarget, Monitor, Position, Screen,

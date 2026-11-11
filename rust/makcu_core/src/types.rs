@@ -1,7 +1,5 @@
 //! Mouse-only domain types. No I/O here.
 
-//! Mouse-only domain types. No I/O here.
-
 /// Physical mouse buttons (1-5, as used by `km.click`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -201,7 +199,7 @@ pub struct Bounds {
 /// Bounding box spanning all monitors; negative origins supported.
 ///
 /// Mirrors Python `virtual_bounds` (`ValueError` on empty becomes
-/// [`MakcuError::InvalidArgument`]).
+/// [`MakcuError::InvalidArgument`](crate::MakcuError::InvalidArgument)).
 /// Rounding follows Rust `f64::round` (half away from zero), while Python
 /// uses banker's rounding — exact ties can differ by 1.
 /// A non-positive monitor `scale` is rejected (Python would divide by zero).
@@ -292,7 +290,7 @@ impl CoordSpace {
 /// Scale desktop pixels to game counts: `round(v * game_dpi / desktop_dpi * sens)`.
 ///
 /// Pure helper; all factors must be > 0 (mirrors Python `ValueError` checks
-/// with [`MakcuError::InvalidArgument`]). Rounding follows Rust
+/// with [`MakcuError::InvalidArgument`](crate::MakcuError::InvalidArgument)). Rounding follows Rust
 /// `f64::round` (half away from zero); Python uses banker's rounding.
 pub fn scale_coordinates(
     x: i32,
