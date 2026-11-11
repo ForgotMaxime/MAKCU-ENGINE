@@ -1,3 +1,10 @@
+//! Serial transport over the management COM port.
+//!
+//! [`MakcuTransport`] mirrors the Python `MakcuTransport` observability
+//! surface: I/O counters ([`Transport::get_stats`](makcu_core::Transport::get_stats)),
+//! a bounded recent-frame ring, a nestable `no_wait` flag honored by
+//! `set()`, a `reconnects` counter, and connection-change callbacks.
+
 use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -8,6 +15,7 @@ use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use std::io::{Read, Write};
 
+use makcu_core::transport::{ConnectionCallback, TransportStats, RECENT_CAPACITY};
 use makcu_core::{protocol::build_cmd, MakcuError, Result, Transport};
 
 /// Baud probe order: 4M first, 115200 fallback.
@@ -22,6 +30,35 @@ const ERROR_WINDOW: Duration = Duration::from_millis(80);
 /// Poll granularity for the demux reader: bounds every single read so a
 /// call can never exceed its deadline (not the port's open timeout).
 const POLL: Duration = Duration::from_millis(10);
+
+/// Interior-mutable observability counters; see [`Transport::get_stats`].
+#[derive(Debug, Default)]
+struct Obs {
+    /// Total transmitted payload bytes.
+    tx_bytes: u64,
+    /// Number of transmitted frames.
+    cmds_sent: u64,
+    /// Number of `reconnect()` calls.
+    reconnects: u64,
+    /// Accumulated query round-trip time.
+    rtt_total: Duration,
+    /// Number of timed queries.
+    rtt_count: u64,
+    /// Last transport/protocol error message.
+    last_error: Option<String>,
+    /// Bounded recent-frame ring (`TX ...` / `RX ...`, oldest-first).
+    recent: VecDeque<String>,
+    /// Nesting depth of `no_wait` scopes.
+    no_wait_depth: usize,
+}
+
+/// Push one line onto a bounded ring, evicting the oldest on overflow.
+fn push_recent(recent: &mut VecDeque<String>, line: String) {
+    if recent.len() >= RECENT_CAPACITY {
+        recent.pop_front();
+    }
+    recent.push_back(line);
+}
 
 struct EventState {
     running: AtomicBool,
@@ -53,19 +90,25 @@ impl EventState {
 }
 
 struct Shared {
-    port: Mutex<Box<dyn serialport::SerialPort>>,
+    /// `None` while disconnected (`close()` takes the handle).
+    port: Mutex<Option<Box<dyn serialport::SerialPort>>>,
     /// Serializes request/response pairs when the event loop is active.
     req: Mutex<()>,
     timeout: Duration,
     port_name: String,
     baud: u32,
     ev: EventState,
+    obs: Mutex<Obs>,
+    conn_cbs: Mutex<Vec<ConnectionCallback>>,
 }
 
 /// Exclusive serial transport with optional demux event loop.
 ///
 /// Not `Clone` on purpose: `Drop` stops a running loop, which would
 /// disturb other owners of a shared port. Create one transport per port.
+///
+/// All observability state uses interior mutability behind `&self`, so the
+/// transport can be shared across threads like the Python driver.
 pub struct MakcuTransport {
     shared: Arc<Shared>,
 }
@@ -79,6 +122,11 @@ impl MakcuTransport {
     /// Baud rate this transport runs at.
     pub fn baud(&self) -> u32 {
         self.shared.baud
+    }
+
+    /// Whether the serial port is currently open.
+    pub fn is_connected(&self) -> bool {
+        self.shared.port.lock().unwrap().is_some()
     }
 
     /// Open a port exclusively (8N1, no flow control) with backoff retry.
@@ -95,12 +143,14 @@ impl MakcuTransport {
                 Ok(p) => {
                     return Ok(Self {
                         shared: Arc::new(Shared {
-                            port: Mutex::new(p),
+                            port: Mutex::new(Some(p)),
                             req: Mutex::new(()),
                             timeout,
                             port_name: port.to_string(),
                             baud,
                             ev: EventState::new(),
+                            obs: Mutex::new(Obs::default()),
+                            conn_cbs: Mutex::new(Vec::new()),
                         }),
                     });
                 }
@@ -111,6 +161,102 @@ impl MakcuTransport {
             }
         }
         Err(MakcuError::Connection(format!("cannot open {last_err}")))
+    }
+
+    /// Reopen a closed port with backoff retry; notifies with `true`.
+    ///
+    /// Idempotent: if the port is already open this is a no-op (no extra
+    /// notification), unlike the constructor [`MakcuTransport::open`].
+    pub fn connect(&self) -> Result<()> {
+        if self.is_connected() {
+            return Ok(());
+        }
+        let mut last_err = String::new();
+        for attempt in 0..10 {
+            match serialport::new(&self.shared.port_name, self.shared.baud)
+                .data_bits(serialport::DataBits::Eight)
+                .parity(serialport::Parity::None)
+                .stop_bits(serialport::StopBits::One)
+                .timeout(self.shared.timeout)
+                .open()
+            {
+                Ok(p) => {
+                    *self.shared.port.lock().unwrap() = Some(p);
+                    self.notify_connection(true);
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_err = format!("{}@{}: {e}", self.shared.port_name, self.shared.baud);
+                    std::thread::sleep(Duration::from_millis(200 * (attempt + 1)));
+                }
+            }
+        }
+        Err(MakcuError::Connection(format!("cannot open {last_err}")))
+    }
+
+    /// Stop the event loop if running, then close the port.
+    ///
+    /// Emits `false` to connection callbacks only on a connected to
+    /// disconnected transition; a redundant close is silent, so
+    /// [`MakcuTransport::reconnect`] emits `false` then `true`.
+    pub fn close(&self) {
+        let _ = self.stop_event_loop();
+        let was_connected = self.shared.port.lock().unwrap().take().is_some();
+        if was_connected {
+            self.notify_connection(false);
+        }
+    }
+
+    /// Close, cool down, and reopen the port (bumps the `reconnects` counter).
+    pub fn reconnect(&self) -> Result<()> {
+        self.shared.obs.lock().unwrap().reconnects += 1;
+        self.close();
+        std::thread::sleep(Duration::from_millis(300));
+        self.connect()
+    }
+
+    /// Dispatch a connection event to a snapshot of callbacks.
+    ///
+    /// The snapshot is taken under lock so registration/removal during
+    /// dispatch is safe. Callbacks must not panic (see module docs); a
+    /// panic unwinds and skips the remaining callbacks.
+    fn notify_connection(&self, connected: bool) {
+        let cbs = self.shared.conn_cbs.lock().unwrap().clone();
+        for cb in cbs {
+            cb(connected);
+        }
+    }
+
+    /// Count one transmitted frame and append it to the ring buffer.
+    fn note_tx(&self, payload: &[u8]) {
+        let mut obs = self.shared.obs.lock().unwrap();
+        obs.tx_bytes += payload.len() as u64;
+        obs.cmds_sent += 1;
+        push_recent(
+            &mut obs.recent,
+            format!("TX {}", String::from_utf8_lossy(payload)),
+        );
+    }
+
+    /// Append one received frame to the ring buffer.
+    fn note_rx(&self, raw: &[u8]) {
+        let mut obs = self.shared.obs.lock().unwrap();
+        push_recent(
+            &mut obs.recent,
+            format!("RX {}", String::from_utf8_lossy(raw)),
+        );
+    }
+
+    /// Fold one query round-trip into the running average.
+    fn note_rtt(&self, dt: Duration) {
+        let mut obs = self.shared.obs.lock().unwrap();
+        obs.rtt_total += dt;
+        obs.rtt_count += 1;
+    }
+
+    /// Remember the last transport/protocol error message.
+    fn note_error(&self, e: &MakcuError) {
+        self.shared.obs.lock().unwrap().last_error = Some(e.to_string());
     }
 
     /// Detect a MAKCU, then open it. One-call shortcut.
@@ -210,7 +356,10 @@ impl MakcuTransport {
         }
         let _guard = self.shared.req.lock().unwrap();
         {
-            let mut port = self.shared.port.lock().unwrap();
+            let mut slot = self.shared.port.lock().unwrap();
+            let Some(port) = slot.as_mut() else {
+                return Err(MakcuError::Connection("transport not connected".into()));
+            };
             port.write_all(payload)
                 .map_err(|e| MakcuError::Connection(e.to_string()))?;
             port.flush()
@@ -240,8 +389,10 @@ impl MakcuTransport {
     }
 
     fn exchange_query(&self, payload: &[u8]) -> Result<Vec<u8>> {
+        self.note_tx(payload);
         if self.shared.ev.running.load(Ordering::SeqCst) {
             let raw = self.request(payload, self.shared.timeout)?;
+            self.note_rx(&raw);
             if raw.is_empty() {
                 return Err(MakcuError::Timeout);
             }
@@ -250,13 +401,19 @@ impl MakcuTransport {
             }
             return Ok(raw);
         }
-        let mut port = self.shared.port.lock().unwrap();
+        let mut slot = self.shared.port.lock().unwrap();
+        let Some(port) = slot.as_mut() else {
+            let err = MakcuError::Connection("transport not connected".into());
+            self.note_error(&err);
+            return Err(err);
+        };
         let _ = port.clear(serialport::ClearBuffer::Input);
         port.write_all(payload)
             .map_err(|e| MakcuError::Connection(e.to_string()))?;
         port.flush()
             .map_err(|e| MakcuError::Connection(e.to_string()))?;
         let raw = read_until(&mut **port, PROMPT, self.shared.timeout)?;
+        self.note_rx(&raw);
         if raw.is_empty() {
             return Err(MakcuError::Timeout);
         }
@@ -353,7 +510,8 @@ fn reader_loop(shared: Arc<Shared>) {
     // be able to interleave, otherwise request() deadlocks on the lock.
     let clean_exit = (|| {
         {
-            let mut port = shared.port.lock().ok()?;
+            let mut slot = shared.port.lock().ok()?;
+            let port = slot.as_mut()?;
             port.set_timeout(POLL).ok()?;
         }
         let mut buf: Vec<u8> = Vec::new();
@@ -363,7 +521,8 @@ fn reader_loop(shared: Arc<Shared>) {
                 return Some(());
             }
             let n = {
-                let mut port = shared.port.lock().ok()?;
+                let mut slot = shared.port.lock().ok()?;
+                let port = slot.as_mut()?;
                 match port.read(&mut chunk) {
                     Ok(n) => n,
                     Err(e) if e.kind() == std::io::ErrorKind::TimedOut => 0,
@@ -400,8 +559,10 @@ fn reader_loop(shared: Arc<Shared>) {
         shared.ev.reply_cv.notify_all();
         shared.ev.event_cv.notify_all();
     }
-    if let Ok(mut port) = shared.port.lock() {
-        let _ = port.set_timeout(shared.timeout);
+    if let Ok(mut slot) = shared.port.lock() {
+        if let Some(port) = slot.as_mut() {
+            let _ = port.set_timeout(shared.timeout);
+        }
     }
 }
 
@@ -416,45 +577,90 @@ impl Drop for MakcuTransport {
 
 impl Transport for MakcuTransport {
     fn query(&self, name: &str, args: &[&str]) -> Result<String> {
-        let raw = match self.exchange_query(&build_cmd(name, args)) {
-            Err(MakcuError::Timeout) => self.exchange_query(&build_cmd(name, args))?,
+        let start = Instant::now();
+        let payload = build_cmd(name, args);
+        let raw = match self.exchange_query(&payload) {
+            Err(MakcuError::Timeout) => self.exchange_query(&payload)?,
             other => other?,
         };
-        makcu_core::protocol::strip_prompt(&raw)
+        let out = match makcu_core::protocol::strip_prompt(&raw) {
+            Ok(s) => s,
+            Err(e) => {
+                self.note_error(&e);
+                return Err(e);
+            }
+        };
+        self.note_rtt(start.elapsed());
+        Ok(out)
     }
 
     fn set(&self, name: &str, args: &[&str]) -> Result<()> {
+        if self.is_no_wait() {
+            return self.fire_and_forget(name, args);
+        }
         self.send_raw(&build_cmd(name, args)).map_err(|e| match e {
-            MakcuError::Protocol(msg) => MakcuError::Protocol(format!("{name} failed: {msg}")),
-            other => other,
+            MakcuError::Protocol(msg) => {
+                let wrapped = MakcuError::Protocol(format!("{name} failed: {msg}"));
+                self.note_error(&wrapped);
+                wrapped
+            }
+            other => {
+                self.note_error(&other);
+                other
+            }
         })
     }
 
     fn send_raw(&self, data: &[u8]) -> Result<()> {
+        self.note_tx(data);
         if self.shared.ev.running.load(Ordering::SeqCst) {
             let raw = self.request(data, ERROR_WINDOW)?;
+            self.note_rx(&raw);
             if contains(&raw, b"ERR") {
-                return Err(MakcuError::Protocol(format!("rejected: {raw:?}")));
+                let err = MakcuError::Protocol(format!("rejected: {raw:?}"));
+                self.note_error(&err);
+                return Err(err);
             }
             return Ok(());
         }
         // Single critical section: another op must not interleave between
         // the write and the ERR-window read, or it would consume our reply.
-        let mut port = self.shared.port.lock().unwrap();
+        let mut slot = self.shared.port.lock().unwrap();
+        let Some(port) = slot.as_mut() else {
+            let err = MakcuError::Connection("transport not connected".into());
+            self.note_error(&err);
+            return Err(err);
+        };
         let _ = port.clear(serialport::ClearBuffer::Input);
-        port.write_all(data)
-            .map_err(|e| MakcuError::Connection(e.to_string()))?;
-        port.flush()
-            .map_err(|e| MakcuError::Connection(e.to_string()))?;
-        let raw = read_until(&mut **port, PROMPT, ERROR_WINDOW)?;
+        let write_res = port
+            .write_all(data)
+            .map_err(|e| MakcuError::Connection(e.to_string()))
+            .and_then(|()| {
+                port.flush()
+                    .map_err(|e| MakcuError::Connection(e.to_string()))
+            })
+            .and_then(|()| read_until(&mut **port, PROMPT, ERROR_WINDOW));
+        let raw = match write_res {
+            Ok(raw) => raw,
+            Err(e) => {
+                self.note_error(&e);
+                return Err(e);
+            }
+        };
+        self.note_rx(&raw);
         if contains(&raw, b"ERR") {
-            return Err(MakcuError::Protocol(format!("rejected: {raw:?}")));
+            let err = MakcuError::Protocol(format!("rejected: {raw:?}"));
+            self.note_error(&err);
+            return Err(err);
         }
         Ok(())
     }
 
     fn read_line(&self, timeout: Duration) -> Result<Vec<u8>> {
-        let mut port = self.shared.port.lock().unwrap();
+        let mut slot = self.shared.port.lock().unwrap();
+        let Some(port) = slot.as_mut() else {
+            return Err(MakcuError::Connection("transport not connected".into()));
+        };
         let raw = read_until(&mut **port, b"\r\n", timeout)?;
         if raw.is_empty() {
             return Err(MakcuError::Timeout);
@@ -466,7 +672,10 @@ impl Transport for MakcuTransport {
         if n == 0 {
             return Err(MakcuError::InvalidArgument("read_exact n=0".into()));
         }
-        let mut port = self.shared.port.lock().unwrap();
+        let mut slot = self.shared.port.lock().unwrap();
+        let Some(port) = slot.as_mut() else {
+            return Err(MakcuError::Connection("transport not connected".into()));
+        };
         let out = read_exact_n(&mut **port, n, timeout)?;
         if out.len() < n {
             return Err(MakcuError::Timeout);
@@ -479,7 +688,10 @@ impl Transport for MakcuTransport {
             return Ok(());
         }
         {
-            let port = self.shared.port.lock().unwrap();
+            let mut slot = self.shared.port.lock().unwrap();
+            let Some(port) = slot.as_mut() else {
+                return Err(MakcuError::Connection("transport not connected".into()));
+            };
             let _ = port.clear(serialport::ClearBuffer::All);
         }
         self.shared.ev.stop.store(false, Ordering::SeqCst);
@@ -537,11 +749,85 @@ impl Transport for MakcuTransport {
     }
 
     fn fire_and_forget(&self, name: &str, args: &[&str]) -> Result<()> {
-        let mut port = self.shared.port.lock().unwrap();
-        port.write_all(&build_cmd(name, args))
-            .map_err(|e| MakcuError::Connection(e.to_string()))?;
-        port.flush()
-            .map_err(|e| MakcuError::Connection(e.to_string()))?;
+        let payload = build_cmd(name, args);
+        let mut slot = self.shared.port.lock().unwrap();
+        let Some(port) = slot.as_mut() else {
+            let err = MakcuError::Connection("transport not connected".into());
+            self.note_error(&err);
+            return Err(err);
+        };
+        let res = port
+            .write_all(&payload)
+            .map_err(|e| MakcuError::Connection(e.to_string()))
+            .and_then(|()| {
+                port.flush()
+                    .map_err(|e| MakcuError::Connection(e.to_string()))
+            });
+        if let Err(e) = res {
+            self.note_error(&e);
+            return Err(e);
+        }
+        self.note_tx(&payload);
         Ok(())
+    }
+
+    fn get_stats(&self) -> TransportStats {
+        let obs = self.shared.obs.lock().unwrap();
+        TransportStats {
+            tx_bytes: obs.tx_bytes,
+            cmds_sent: obs.cmds_sent,
+            reconnects: obs.reconnects,
+            avg_rtt_ms: if obs.rtt_count > 0 {
+                obs.rtt_total.as_secs_f64() / obs.rtt_count as f64 * 1000.0
+            } else {
+                0.0
+            },
+            last_error: obs.last_error.clone(),
+        }
+    }
+
+    fn reset_stats(&self) {
+        let mut obs = self.shared.obs.lock().unwrap();
+        obs.tx_bytes = 0;
+        obs.cmds_sent = 0;
+        obs.reconnects = 0;
+        obs.rtt_total = Duration::ZERO;
+        obs.rtt_count = 0;
+        obs.last_error = None;
+    }
+
+    fn get_recent_lines(&self, n: usize) -> Vec<String> {
+        let obs = self.shared.obs.lock().unwrap();
+        let len = obs.recent.len();
+        obs.recent
+            .iter()
+            .skip(len.saturating_sub(n))
+            .cloned()
+            .collect()
+    }
+
+    fn enter_no_wait(&self) {
+        self.shared.obs.lock().unwrap().no_wait_depth += 1;
+    }
+
+    fn exit_no_wait(&self) {
+        let mut obs = self.shared.obs.lock().unwrap();
+        obs.no_wait_depth = obs.no_wait_depth.saturating_sub(1);
+    }
+
+    fn is_no_wait(&self) -> bool {
+        self.shared.obs.lock().unwrap().no_wait_depth > 0
+    }
+
+    fn on_connection_change(&self, cb: ConnectionCallback) -> ConnectionCallback {
+        self.shared.conn_cbs.lock().unwrap().push(cb.clone());
+        cb
+    }
+
+    fn remove_connection_callback(&self, cb: &ConnectionCallback) {
+        let mut cbs = self.shared.conn_cbs.lock().unwrap();
+        if let Some(pos) = cbs.iter().position(|c| ConnectionCallback::ptr_eq(c, cb)) {
+            cbs.remove(pos);
+        }
     }
 }

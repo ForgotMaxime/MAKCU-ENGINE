@@ -15,5 +15,5 @@ pub use batch::BatchBuilder;
 pub use error::{MakcuError, Result};
 pub use mock::MockTransport;
 pub use mouse::Mouse;
-pub use transport::Transport;
+pub use transport::{ConnectionCallback, NoWaitGuard, Transport, TransportStats, RECENT_CAPACITY};
 pub use types::{Button, ButtonOwnership, DeviceInfo, LockTarget, Position, Screen};
