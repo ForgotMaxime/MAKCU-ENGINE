@@ -110,11 +110,11 @@ def test_macro_helpers():
         {"t_ms": 0, "x": 0, "y": 0},
         {"t_ms": 20, "x": 5, "y": 0},
     ]
-    assert macros.scale_coordinates(events[:2], 2.0, 0.5)[1]["x"] == 0
-    scaled = macros.scale_coordinates([{"t_ms": 0, "x": 10, "y": 20}], 0.5, 2.0)
+    assert macros.scale_xy(events[:2], 2.0, 0.5)[1]["x"] == 0
+    scaled = macros.scale_xy([{"t_ms": 0, "x": 10, "y": 20}], 0.5, 2.0)
     assert (scaled[0]["x"], scaled[0]["y"]) == (5, 40)
     with pytest.raises(ValueError):
-        macros.scale_coordinates(events, 0.0, 1.0)
+        macros.scale_xy(events, 0.0, 1.0)
     with pytest.raises(ValueError):
         macros.adjust_delays(events, 10.0)
     doubled = macros.adjust_delays(events, 2.0)
@@ -147,3 +147,53 @@ def test_macro_main_dry_run(tmp_path, capsys):
     assert macros.main([str(p)]) == 0
     out = capsys.readouterr().out
     assert "move(3,4)" in out
+
+
+def test_macro_to_rel_deltas_empty_rejected():
+    macros = _load_example("macros")
+    with pytest.raises(ValueError):
+        macros.to_rel_deltas([])
+
+
+def test_macro_load_rejects_out_of_range_coords(tmp_path):
+    import json
+
+    macros = _load_example("macros")
+    for bad in (
+        {"t_ms": 0, "x": -1, "y": 0},
+        {"t_ms": 0, "x": 0, "y": 32768},
+        {"t_ms": 0, "x": 40000, "y": 0},
+    ):
+        p = tmp_path / "bad.json"
+        p.write_text(
+            json.dumps({"version": 1, "events": [bad]}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError):
+            macros.load_macro(p)
+
+
+def test_macro_scale_xy_renamed_no_shadow():
+    macros = _load_example("macros")
+    assert callable(macros.scale_xy)
+    assert not hasattr(macros, "scale_coordinates")
+    assert macros.scale_xy([{"t_ms": 0, "x": 4, "y": 6}], 0.5, 0.5) == [
+        {"t_ms": 0, "x": 2, "y": 3}
+    ]
+
+
+def test_macro_replay_still_explicit(tmp_path, capsys):
+    import json
+
+    macros = _load_example("macros")
+    p = tmp_path / "m.json"
+    p.write_text(
+        json.dumps(
+            {"version": 1, "events": [{"t_ms": 0, "x": 0, "y": 0}, {"t_ms": 5, "x": 1, "y": 1}]}
+        ),
+        encoding="utf-8",
+    )
+    # No --replay: dry-run plan, no port needed.
+    assert macros.main([str(p)]) == 0
+    # --replay without --port fails the same way as before.
+    assert macros.main([str(p), "--replay"]) == 2
