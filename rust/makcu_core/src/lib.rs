@@ -1,6 +1,7 @@
 #![warn(missing_docs)]
 //! MAKCU V4 mouse-only core: zero-dependency protocol, types and
 //! transport-agnostic mouse API. Pair with `makcu_serial` for hardware I/O.
+//! Tests live inline in each module (`#[cfg(test)]`); no separate `tests/` directory by design.
 
 pub mod batch;
 pub mod error;

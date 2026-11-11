@@ -155,8 +155,26 @@ impl<T: Transport> Mouse<T> {
     }
 
     /// Block until no injected movement remains; false on timeout.
+    ///
+    /// Convenience wrapper with the Python default poll (20 ms); see
+    /// [`wait_idle_with_poll`](Self::wait_idle_with_poll) for a tunable
+    /// poll. Negative polls are unrepresentable (`Duration` is unsigned),
+    /// so the Python `poll_s < 0` validation has no Rust counterpart.
     pub fn wait_idle(&self, timeout: std::time::Duration) -> Result<bool> {
-        let poll = std::time::Duration::from_millis(20);
+        self.wait_idle_with_poll(timeout, std::time::Duration::from_millis(20))
+    }
+
+    /// Block until no injected movement remains, polling every `poll`.
+    ///
+    /// Returns `true` as soon as `moving()` reports idle, `false` on
+    /// timeout. Mirrors Python `wait_idle(timeout_s, poll_s)`: each
+    /// iteration sleeps `min(poll, remaining)` so the call never exceeds
+    /// `timeout` by more than one final `moving()` round-trip.
+    pub fn wait_idle_with_poll(
+        &self,
+        timeout: std::time::Duration,
+        poll: std::time::Duration,
+    ) -> Result<bool> {
         let deadline = std::time::Instant::now() + timeout;
         loop {
             if !self.moving()? {
@@ -334,6 +352,11 @@ impl<T: Transport> Mouse<T> {
     }
 
     /// Release a mouse button; silent variant skips the frame.
+    ///
+    /// Verdict on `button_up_force` (no Python counterpart, no hardware to
+    /// probe): no separate force API exists. `up(b, true)` sends the
+    /// firmware silent-release (`... 2`) frame — the only force path — and
+    /// matches Python `up(silent_release=True)` exactly.
     pub fn up(&self, b: Button, silent_release: bool) -> Result<()> {
         self.t.set(
             &format!("km.{}", button_method(b)),
@@ -579,6 +602,25 @@ impl<T: Transport> Mouse<T> {
             .map_err(|_| MakcuError::Protocol("bad api_version".into()))
     }
 
+    /// Require at least firmware API version `min`.
+    ///
+    /// No Python counterpart exists yet (the sibling branch has not added
+    /// `requires_api`): this queries [`api_version`](Self::api_version) and
+    /// compares, failing with the same [`MakcuError::InvalidArgument`]
+    /// shape as every other argument gate (`"requires api >= {min},
+    /// device reports {v}"`). Call before using version-gated commands
+    /// (`autorelease` / `heartbeat` need 1, i.e. V4.103+).
+    pub fn requires_api(&self, min: u32) -> Result<()> {
+        let v = self.api_version()?;
+        if v >= min {
+            Ok(())
+        } else {
+            Err(MakcuError::InvalidArgument(format!(
+                "requires api >= {min}, device reports {v}"
+            )))
+        }
+    }
+
     /// Enable physical button-change streaming (modes 1-3).
     pub fn start_button_stream(&self, mode: u8) -> Result<()> {
         check_stream_mode(mode)?;
@@ -787,6 +829,48 @@ mod tests {
         let t = MockTransport::new();
         let m = Mouse::new(&t);
         assert!(m.wait_idle(Duration::from_millis(200)).unwrap());
+    }
+
+    #[test]
+    fn wait_idle_with_poll_consumes_scripted_moving() {
+        use std::time::Duration;
+        let t = MockTransport::new();
+        t.push_moving(true);
+        t.push_moving(true);
+        t.push_moving(false);
+        let m = Mouse::new(&t);
+        assert!(m
+            .wait_idle_with_poll(Duration::from_secs(2), Duration::from_millis(1))
+            .unwrap());
+        let moving_queries = t
+            .sent()
+            .iter()
+            .filter(|c| c.as_str() == "km.moving()")
+            .count();
+        assert_eq!(moving_queries, 3);
+    }
+
+    #[test]
+    fn wait_idle_with_poll_times_out_when_busy() {
+        use std::time::Duration;
+        let t = MockTransport::new().with_reply("km.moving", "1");
+        let m = Mouse::new(&t);
+        assert!(!m
+            .wait_idle_with_poll(Duration::from_millis(50), Duration::from_millis(5))
+            .unwrap());
+    }
+
+    #[test]
+    fn requires_api_gates_on_version() {
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        assert!(m.requires_api(1).is_ok());
+        assert_eq!(
+            m.requires_api(2),
+            Err(MakcuError::InvalidArgument(
+                "requires api >= 2, device reports 1".into()
+            ))
+        );
     }
 
     #[test]

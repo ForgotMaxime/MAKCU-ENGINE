@@ -24,6 +24,15 @@
 //!   on connect, `false` on disconnect, dispatched from a snapshot taken
 //!   under lock so registration during dispatch is safe.
 //!
+//! ## Fire-and-forget accounting (mirrors the Python reference)
+//!
+//! A failed `fire_and_forget` is invisible in the counters on both stacks,
+//! matching Python: the serial driver counts TX only after a successful
+//! write+flush (a failed write records `last_error` instead and counts
+//! zero), and the mock has no failure path so every call counts one. The
+//! post-write `note_tx` placement is intentional — moving it before the
+//! write would count failed transmissions and diverge from Python.
+//!
 //! ## Interior mutability
 //!
 //! Every [`Transport`] method takes `&self` (the Python driver serializes
@@ -51,7 +60,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::Result;
+use crate::{MakcuError, Result};
 
 /// How many recent `TX`/`RX` frames [`Transport::get_recent_lines`] keeps.
 ///
@@ -132,15 +141,30 @@ impl<T: Transport + ?Sized> Drop for NoWaitGuard<'_, T> {
 /// Serial-or-mock I/O used by [`Mouse`](crate::Mouse).
 pub trait Transport {
     /// Blocking query; returns the prompt-stripped payload.
+    ///
+    /// Delta vs Python (intentional): no `retries` knob. The serial driver
+    /// already performs Python's default (one retry on timeout) internally;
+    /// loop the call yourself for more attempts — errors are typed, so
+    /// `MakcuError::Timeout` retries are one `match` arm.
     fn query(&self, name: &str, args: &[&str]) -> Result<String>;
     /// Silent setter; errors surface through the ERR window.
     ///
     /// Inside `no_wait` (see [`Transport::no_wait`]), degrades to
     /// fire-and-forget with no ERR-window read.
+    ///
+    /// Delta vs Python (intentional): no `error_window_s` knob. The ERR
+    /// window is fixed at 80 ms (the Python default); `send_raw` documents
+    /// the same fixed window.
     fn set(&self, name: &str, args: &[&str]) -> Result<()>;
     /// Write without waiting for anything back.
+    ///
+    /// See the module docs: a failed call counts zero (invisible in
+    /// counters) on both stacks, matching Python.
     fn fire_and_forget(&self, name: &str, args: &[&str]) -> Result<()>;
     /// Write pre-framed bytes; single ERR-window read.
+    ///
+    /// Delta vs Python (intentional): no `error_window_s` knob; the window
+    /// is fixed at 80 ms (the Python default).
     fn send_raw(&self, data: &[u8]) -> Result<()>;
     /// Read one CRLF-terminated frame without touching the buffer.
     fn read_line(&self, timeout: std::time::Duration) -> Result<Vec<u8>>;
@@ -154,6 +178,35 @@ pub trait Transport {
     fn event_loop_running(&self) -> bool;
     /// Next queued stream frame; only with the event loop running.
     fn poll_event(&self, timeout: std::time::Duration) -> Result<Vec<u8>>;
+
+    /// Local open-flag check behind [`Transport::ensure_connected`].
+    ///
+    /// Override honestly (mock: connected flag; serial: port present).
+    /// Default: `false`, so external implementors fail fast until they opt
+    /// in. Never touches the wire.
+    fn check_connected(&self) -> bool {
+        false
+    }
+
+    /// Fail fast when the transport is down; never touches the wire.
+    ///
+    /// Call this before a batch of operations after a long idle period or
+    /// a possible hot-plug event, not before every query — `query`/`set`
+    /// already fail fast with [`MakcuError::Connection`] on a dead link.
+    ///
+    /// Delta vs Python (intentional): Python pings `km.echo` and
+    /// reconnects once. This port only checks the local open flag (via
+    /// [`Transport::check_connected`]) and returns a `Connection` error
+    /// when down; recover with the concrete `reconnect()` / `connect()`,
+    /// which live on the concrete types (with their own backoff) rather
+    /// than on this object-safe trait.
+    fn ensure_connected(&self) -> Result<()> {
+        if self.check_connected() {
+            Ok(())
+        } else {
+            Err(MakcuError::Connection("transport not connected".into()))
+        }
+    }
 
     /// Snapshot of I/O counters: bytes/commands/reconnects/mean RTT/last error.
     ///
@@ -316,6 +369,12 @@ impl<T: Transport> Transport for &T {
     }
     fn poll_event(&self, timeout: std::time::Duration) -> Result<Vec<u8>> {
         (**self).poll_event(timeout)
+    }
+    fn check_connected(&self) -> bool {
+        (**self).check_connected()
+    }
+    fn ensure_connected(&self) -> Result<()> {
+        (**self).ensure_connected()
     }
     fn get_stats(&self) -> TransportStats {
         (**self).get_stats()

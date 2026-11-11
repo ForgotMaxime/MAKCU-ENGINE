@@ -70,6 +70,10 @@ pub struct MockTransport {
     connected: AtomicBool,
     conn_cbs: Mutex<Vec<ConnectionCallback>>,
     obs: Mutex<Obs>,
+    /// Scripted `km.moving` replies, consumed in order; falls back to the
+    /// canned table once drained. Exists so `wait_idle` poll timing is
+    /// unit-testable without hardware.
+    moving_script: Mutex<VecDeque<String>>,
 }
 
 impl MockTransport {
@@ -84,6 +88,7 @@ impl MockTransport {
             connected: AtomicBool::new(false),
             conn_cbs: Mutex::new(Vec::new()),
             obs: Mutex::new(Obs::default()),
+            moving_script: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -95,6 +100,19 @@ impl MockTransport {
     /// Enqueue a raw stream frame for `read_line` / `poll_event`.
     pub fn push_stream_frame(&self, frame: &[u8]) {
         self.stream.lock().unwrap().extend_from_slice(frame);
+    }
+
+    /// Enqueue one scripted `km.moving` reply, consumed in order.
+    ///
+    /// Scripted replies take precedence over `with_reply` / the canned
+    /// table for `km.moving` only; every scripted query still records `sent`
+    /// and counts TX/RX like a real round-trip.
+    pub fn push_moving(&self, moving: bool) {
+        self.moving_script.lock().unwrap().push_back(if moving {
+            "1".to_string()
+        } else {
+            "0".to_string()
+        });
     }
 
     /// Canned reply override, matched on the full command or base name.
@@ -218,6 +236,16 @@ impl Transport for MockTransport {
         let cmd = fmt_cmd(name, args);
         self.sent.lock().unwrap().push(cmd.clone());
         let base = name.to_string();
+        if base == "km.moving" {
+            if let Some(scripted) = self.moving_script.lock().unwrap().pop_front() {
+                self.note_rtt(start.elapsed());
+                self.note_rx(&scripted);
+                if let Some(t0) = t_prof {
+                    self.record_profile(name, t0.elapsed());
+                }
+                return Ok(scripted);
+            }
+        }
         let reply = if let Some(r) = self.replies.get(&cmd).or_else(|| self.replies.get(&base)) {
             r.clone()
         } else {
@@ -460,6 +488,11 @@ impl Transport for MockTransport {
 
     fn is_no_wait(&self) -> bool {
         self.obs.lock().unwrap().no_wait_depth > 0
+    }
+
+    /// Honest open-flag check: mirrors the inherent [`Self::is_connected`].
+    fn check_connected(&self) -> bool {
+        self.is_connected()
     }
 
     fn on_connection_change(&self, cb: ConnectionCallback) -> ConnectionCallback {
@@ -716,5 +749,16 @@ mod tests {
         t.close();
         t.connect();
         assert!(t.is_connected());
+    }
+
+    #[test]
+    fn ensure_connected_follows_flag() {
+        use crate::Transport as _;
+        let t = MockTransport::new();
+        assert!(t.ensure_connected().is_err());
+        t.connect();
+        assert!(t.ensure_connected().is_ok());
+        t.close();
+        assert!(t.ensure_connected().is_err());
     }
 }
