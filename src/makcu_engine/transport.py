@@ -157,6 +157,7 @@ class MakcuTransport:
         self._last_error: str | None = None
         self._recent: deque[str] = deque(maxlen=200)
         self._no_wait_depth = 0
+        self._profile: dict[str, list[float]] | None = None
 
     @property
     def port(self) -> str:
@@ -390,6 +391,62 @@ class MakcuTransport:
             self._rtt_count = 0
             self._last_error = None
 
+    def enable_profiling(self) -> None:
+        """Opt in to per-command timing; off by default (zero-cost single None check)."""
+        with self._obs:
+            if self._profile is None:
+                self._profile = {}
+
+    def disable_profiling(self) -> None:
+        """Opt out of per-command timing; recorded data is discarded."""
+        with self._obs:
+            self._profile = None
+
+    def profiling_enabled(self) -> bool:
+        """Whether per-command timing is currently recorded."""
+        return self._profile is not None
+
+    def get_profile(self) -> dict[str, dict[str, float | int]]:
+        """Snapshot of per-command timings: count/total_s/avg_ms/min_ms/max_ms."""
+        with self._obs:
+            prof = dict(self._profile) if self._profile is not None else {}
+            acc: dict[str, list[float]] = {k: list(v) for k, v in prof.items()}
+        out: dict[str, dict[str, float | int]] = {}
+        for cmd, ent in acc.items():
+            count = int(ent[0])
+            total = ent[1]
+            out[cmd] = {
+                "count": count,
+                "total_s": total,
+                "avg_ms": (total / count * 1000.0) if count else 0.0,
+                "min_ms": ent[2] * 1000.0,
+                "max_ms": ent[3] * 1000.0,
+            }
+        return out
+
+    def reset_profile(self) -> None:
+        """Clear per-command timings (keeps profiling enabled state)."""
+        with self._obs:
+            if self._profile is not None:
+                self._profile.clear()
+
+    def _record_profile(self, cmd: str, dt_s: float) -> None:
+        """Fold one query/set duration into the per-command table."""
+        prof = self._profile
+        if prof is None:
+            return
+        with self._obs:
+            ent = prof.get(cmd)
+            if ent is None:
+                prof[cmd] = [1.0, dt_s, dt_s, dt_s]
+            else:
+                ent[0] += 1.0
+                ent[1] += dt_s
+                if dt_s < ent[2]:
+                    ent[2] = dt_s
+                if dt_s > ent[3]:
+                    ent[3] = dt_s
+
     def get_recent_lines(self, n: int = 20) -> list[str]:
         """Last n raw TX/RX frames (oldest first, at most 200 kept)."""
         if n <= 0:
@@ -490,6 +547,8 @@ class MakcuTransport:
 
     def query(self, name: str, *args: int | str, retries: int = 1) -> str:
         """Blocking query with one retry on timeout; returns stripped payload."""
+        prof_on = self._profile is not None
+        t_prof = time.perf_counter() if prof_on else 0.0
         last: MakcuTimeoutError = MakcuTimeoutError("no reply")
         start = time.monotonic()
         try:
@@ -506,6 +565,9 @@ class MakcuTransport:
         except MakcuError as e:
             self._note_error(e)
             raise
+        finally:
+            if prof_on:
+                self._record_profile(name, time.perf_counter() - t_prof)
         self._note_rtt(time.monotonic() - start)
         return strip_prompt(raw)
 
@@ -517,12 +579,17 @@ class MakcuTransport:
         if self._no_wait_active():
             self.fire_and_forget(name, *args)
             return
+        prof_on = self._profile is not None
+        t_prof = time.perf_counter() if prof_on else 0.0
         try:
             self.send_raw(build_cmd(name, *args), error_window_s)
         except MakcuProtocolError as e:
             wrapped = MakcuProtocolError(f"{name} failed: {e}")
             self._note_error(wrapped)
             raise wrapped from e
+        finally:
+            if prof_on:
+                self._record_profile(name, time.perf_counter() - t_prof)
 
     def send_raw(self, data: bytes, error_window_s: float = 0.08) -> None:
         """Write pre-framed bytes; single ERR-window read. Used by Batch."""
