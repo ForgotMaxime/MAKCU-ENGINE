@@ -187,6 +187,9 @@ impl MakcuTransport {
     ///
     /// Idempotent: if the port is already open this is a no-op (no extra
     /// notification), unlike the constructor [`MakcuTransport::open`].
+    ///
+    /// Delta vs Python (intentional): no `retries` knob — always 10
+    /// attempts with Python's 200 ms * (attempt + 1) backoff.
     pub fn connect(&self) -> Result<()> {
         if self.is_connected() {
             return Ok(());
@@ -314,6 +317,9 @@ impl MakcuTransport {
     }
 
     /// Baud-scan one port with `km.version()`; returns the working baud.
+    ///
+    /// Delta vs Python (intentional): no `timeout_s` knob — fixed 800 ms
+    /// window; tries [`BAUDS`] in order with the same 150 ms settle.
     pub fn probe(port: &str) -> Result<u32> {
         for baud in BAUDS {
             let timeout = Duration::from_millis(800);
@@ -334,6 +340,10 @@ impl MakcuTransport {
     }
 
     /// First candidate that answers `km.MAKCU`, with its baud.
+    ///
+    /// Delta vs Python (intentional): no `timeout_s` / `candidates` knobs —
+    /// scans [`list_candidates`](Self::list_candidates); call
+    /// [`probe`](Self::probe) in a loop for custom candidates.
     pub fn detect() -> Result<(String, u32)> {
         for port in Self::list_candidates() {
             if let Ok(baud) = Self::probe(&port) {
@@ -603,6 +613,8 @@ impl Drop for MakcuTransport {
 }
 
 impl Transport for MakcuTransport {
+    /// Blocking query with Python's default (one retry on timeout) built
+    /// in; see [`Transport::query`] for the intentional no-knob delta.
     fn query(&self, name: &str, args: &[&str]) -> Result<String> {
         let prof_on = self.profiling_enabled();
         let t_prof = if prof_on { Some(Instant::now()) } else { None };
@@ -652,6 +664,8 @@ impl Transport for MakcuTransport {
         res
     }
 
+    /// Write pre-framed bytes with a fixed 80 ms ERR window (the Python
+    /// default); see [`Transport::send_raw`].
     fn send_raw(&self, data: &[u8]) -> Result<()> {
         self.note_tx(data);
         if self.shared.ev.running.load(Ordering::SeqCst) {
@@ -934,6 +948,11 @@ impl Transport for MakcuTransport {
 
     fn is_no_wait(&self) -> bool {
         self.shared.obs.lock().unwrap().no_wait_depth > 0
+    }
+
+    /// Honest open-flag check: mirrors the inherent [`Self::is_connected`].
+    fn check_connected(&self) -> bool {
+        self.is_connected()
     }
 
     fn on_connection_change(&self, cb: ConnectionCallback) -> ConnectionCallback {
