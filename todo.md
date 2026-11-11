@@ -15,15 +15,15 @@ Légende : `[P0]` critique, `[P1]` utile, `[P2]` idée. Cible de fichier entre p
 - Stream : `start/stop/button_stream_state/poll_button_event` modes 1-3 + `ButtonMonitor` (`events.py`) + loop demux (`transport.py`).
 - Discovery : `list_candidates/detect/detect_all/wait_for_device/auto/reconnect/ensure_connected` (`transport.py`).
 
-## [P0] 0.6.0 — Parité V4 / ergonomie (sans élargir le scope)
-- [ ] `init()` + release-all sur connect/disconnect anti-stuck (`mouse.py`, `transport.py`) — acceptation : `test_mouse_mock` + HW `version/device` inchangés après `init`.
-- [ ] Alias `press/release` fins sur `down/up` + `double_click(button, gap_ms)` (`mouse.py`) — acceptation : parité `makcu-py-lib`, zéro duplication de validation (`protocol.check_*`).
-- [ ] Parité `BatchBuilder.up(silent_release=…)` avec `Mouse.up` (`batch.py`) — acceptation : test mock du flag `2`.
-- [ ] `get_all_lock_states() + is_locked()` avec cache court (`mouse.py`, cf. `makcu-py-lib`) — acceptation : 1 query par appel groupé, pas N.
-- [ ] `get_button_states()/get_button_mask()/is_pressed()` helpers sur `Mouse` ou `ButtonMonitor` (`mouse.py`/`events.py`) — acceptation : lecture sans effet de bord, testée sur mock.
-- [ ] `on_connection_change(cb)` + `remove_connection_callback` (`transport.py`, cf. `makcu-py-lib`, crate `makcu`) — acceptation : callback sur `connect/disconnect/reconnect`, exemple monitor.
-- [ ] Trancher `interpolation 0x1F` : pas de nom `km.*` texte connu → soit `send_raw` documenté, soit marqué non supporté ASCII (`docs/protocol.md`).
-- [ ] Trancher stream `wheel-telemetry 0x20` + snapshots `0x55/0x56` : binaire → a priori non-goals, à documenter explicitement (`docs/protocol.md`).
+## [P0] 0.6.0 — Parité V4 / ergonomie (sans élargir le scope) — PARTIE MERGÉE 2026-11-11
+- [x] `init()` + release-all opt-in explicite, jamais auto-appelé (`mouse.py`) — mergé.
+- [x] Alias `press/release` sur `down/up` + `double_click` (`mouse.py`) — mergé.
+- [x] Parité `BatchBuilder.up(silent_release=…)` (`batch.py`) — mergé.
+- [x] `get_all_lock_states() + is_locked()` stateless (`mouse.py`) — mergé.
+- [x] `get_button_states()/get_button_mask()/is_pressed()` (`mouse.py`) — mergé.
+- [x] `on_connection_change(cb)` + `remove_connection_callback` (`transport.py`, mock镜) — mergé.
+- [ ] Trancher `interpolation 0x1F` : pas de nom `km.*` texte connu → soit `send_raw` documenté, soit marqué non supporté ASCII (`docs/protocol.md`) — assigné `feat/p1-transport-docs`, en cours.
+- [ ] Trancher stream `wheel-telemetry 0x20` + snapshots `0x55/0x56` : binaire → a priori non-goals, à documenter explicitement (`docs/protocol.md`) — assigné `feat/p1-transport-docs`, en cours.
 
 ## [P1] 0.7.0 — Humanisation `extras` (mêmes maths Python/Rust)
 - [ ] `move_bezier(dx, dy, segments, ctrl_x, ctrl_y)` côté firmware (`km.move(x,y,seg,cx,cy)`, cf. `pymakcu`/`makcu-py-lib`) — acceptation : mock + HW, fallback `ctrl=dx//2, dy//2`.

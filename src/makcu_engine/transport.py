@@ -13,17 +13,19 @@ mode 3 stays on the legacy poll path.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import threading
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterator
 
 import serial
 import serial.tools.list_ports
 
 from . import config
-from .errors import MakcuConnectionError, MakcuProtocolError, MakcuTimeoutError
+from .errors import MakcuConnectionError, MakcuError, MakcuProtocolError, MakcuTimeoutError
 from .protocol import build_cmd, strip_prompt
 
 logger = logging.getLogger(__name__)
@@ -145,6 +147,16 @@ class MakcuTransport:
         self._loop: _EventLoop | None = None
         self._conn_cbs: list[Callable[[bool], None]] = []
         self._conn_cbs_lock = threading.Lock()
+        # Observability (counting only; never changes I/O behavior).
+        self._obs = threading.Lock()
+        self._tx_bytes = 0
+        self._cmds_sent = 0
+        self._reconnects = 0
+        self._rtt_total_s = 0.0
+        self._rtt_count = 0
+        self._last_error: str | None = None
+        self._recent: deque[str] = deque(maxlen=200)
+        self._no_wait_depth = 0
 
     @property
     def port(self) -> str:
@@ -356,6 +368,89 @@ class MakcuTransport:
         """Whether the demux reader is active."""
         return self._loop is not None
 
+    def get_stats(self) -> dict[str, int | float | str | None]:
+        """Snapshot of I/O counters: tx_bytes, cmds_sent, reconnects, avg_rtt_ms, last_error."""
+        with self._obs:
+            avg = (self._rtt_total_s / self._rtt_count * 1000.0) if self._rtt_count else 0.0
+            return {
+                "tx_bytes": self._tx_bytes,
+                "cmds_sent": self._cmds_sent,
+                "reconnects": self._reconnects,
+                "avg_rtt_ms": avg,
+                "last_error": self._last_error,
+            }
+
+    def reset_stats(self) -> None:
+        """Zero all I/O counters and clear last_error (ring buffer kept)."""
+        with self._obs:
+            self._tx_bytes = 0
+            self._cmds_sent = 0
+            self._reconnects = 0
+            self._rtt_total_s = 0.0
+            self._rtt_count = 0
+            self._last_error = None
+
+    def get_recent_lines(self, n: int = 20) -> list[str]:
+        """Last n raw TX/RX frames (oldest first, at most 200 kept)."""
+        if n <= 0:
+            return []
+        with self._obs:
+            return list(self._recent)[-n:]
+
+    @contextlib.contextmanager
+    def no_wait(self) -> Iterator[None]:
+        """Inside the block, set() behaves as fire-and-forget (no ERR window read).
+
+        Queries still block for their replies; send_raw() is unaffected
+        (Batch keeps its single ERR-window read). May nest.
+        """
+        with self._obs:
+            self._no_wait_depth += 1
+        try:
+            yield
+        finally:
+            with self._obs:
+                self._no_wait_depth -= 1
+
+    def _no_wait_active(self) -> bool:
+        """Whether inside a no_wait() block."""
+        with self._obs:
+            return self._no_wait_depth > 0
+
+    def _note_tx(self, payload: bytes) -> None:
+        """Count one transmitted frame and append it to the ring buffer."""
+        with self._obs:
+            self._tx_bytes += len(payload)
+            self._cmds_sent += 1
+            try:
+                self._recent.append(f"TX {payload.decode('ascii')}")
+            except UnicodeDecodeError:
+                self._recent.append(f"TX {payload!r}")
+
+    def _note_rx(self, raw: bytes) -> None:
+        """Append one received frame to the ring buffer."""
+        with self._obs:
+            try:
+                self._recent.append(f"RX {raw.decode('ascii')}")
+            except UnicodeDecodeError:
+                self._recent.append(f"RX {raw!r}")
+
+    def _note_rtt(self, dt_s: float) -> None:
+        """Fold one query round-trip into the running average."""
+        with self._obs:
+            self._rtt_total_s += dt_s
+            self._rtt_count += 1
+
+    def _note_error(self, e: Exception) -> None:
+        """Remember the last transport/protocol error message."""
+        with self._obs:
+            self._last_error = str(e)
+
+    def _note_reconnect(self) -> None:
+        """Count one reconnect."""
+        with self._obs:
+            self._reconnects += 1
+
     def poll_event(self, timeout_s: float = 0.5) -> bytes:
         """Next queued stream frame; fails fast if the reader died."""
         loop = self._loop
@@ -370,12 +465,15 @@ class MakcuTransport:
 
     def _exchange(self, payload: bytes) -> bytes:
         raw: bytes
+        self._note_tx(payload)
         if self._loop is not None:
             with self._req:
                 raw = self._loop.request(payload, self._timeout_s)
         else:
             if self._ser is None:
-                raise MakcuConnectionError("transport not connected")
+                err = MakcuConnectionError("transport not connected")
+                self._note_error(err)
+                raise err
             logger.debug("TX %r", payload)
             with self._lock:
                 self._ser.reset_input_buffer()
@@ -383,6 +481,7 @@ class MakcuTransport:
                 self._ser.flush()
                 raw = self._ser.read_until(config.PROMPT)
         logger.debug("RX %r", raw)
+        self._note_rx(raw)
         if not raw:
             raise MakcuTimeoutError("no reply (prompt >>> missing)")
         if config.PROMPT not in raw:
@@ -392,34 +491,51 @@ class MakcuTransport:
     def query(self, name: str, *args: int | str, retries: int = 1) -> str:
         """Blocking query with one retry on timeout; returns stripped payload."""
         last: MakcuTimeoutError = MakcuTimeoutError("no reply")
-        for _ in range(max(retries, 0) + 1):
-            try:
-                raw = self._exchange(build_cmd(name, *args))
-                break
-            except MakcuTimeoutError as e:
-                last = e
-                logger.debug("query %s timeout, retrying", name)
-                continue
-        else:
-            raise last
+        start = time.monotonic()
+        try:
+            for _ in range(max(retries, 0) + 1):
+                try:
+                    raw = self._exchange(build_cmd(name, *args))
+                    break
+                except MakcuTimeoutError as e:
+                    last = e
+                    logger.debug("query %s timeout, retrying", name)
+                    continue
+            else:
+                raise last
+        except MakcuError as e:
+            self._note_error(e)
+            raise
+        self._note_rtt(time.monotonic() - start)
         return strip_prompt(raw)
 
     def set(self, name: str, *args: int | str, error_window_s: float = 0.08) -> None:
-        """Silent setter; the command name is attached to protocol errors."""
+        """Silent setter; the command name is attached to protocol errors.
+
+        Inside no_wait(), degrades to fire_and_forget (no ERR window read).
+        """
+        if self._no_wait_active():
+            self.fire_and_forget(name, *args)
+            return
         try:
             self.send_raw(build_cmd(name, *args), error_window_s)
         except MakcuProtocolError as e:
-            raise MakcuProtocolError(f"{name} failed: {e}") from e
+            wrapped = MakcuProtocolError(f"{name} failed: {e}")
+            self._note_error(wrapped)
+            raise wrapped from e
 
     def send_raw(self, data: bytes, error_window_s: float = 0.08) -> None:
         """Write pre-framed bytes; single ERR-window read. Used by Batch."""
         logger.debug("TX %r", data)
+        self._note_tx(data)
         if self._loop is not None:
             with self._req:
                 raw = self._loop.request(data, error_window_s)
         else:
             if self._ser is None:
-                raise MakcuConnectionError("transport not connected")
+                err = MakcuConnectionError("transport not connected")
+                self._note_error(err)
+                raise err
             with self._lock:
                 self._ser.reset_input_buffer()
                 self._ser.write(data)
@@ -431,8 +547,11 @@ class MakcuTransport:
                 finally:
                     self._ser.timeout = prev
         logger.debug("RX %r", raw)
+        self._note_rx(raw)
         if b"ERR" in raw:
-            raise MakcuProtocolError(f"device ERR: {raw!r}")
+            dev_err = MakcuProtocolError(f"device ERR: {raw!r}")
+            self._note_error(dev_err)
+            raise dev_err
 
     def read_line(self, timeout_s: float = 0.5) -> bytes:
         """Read one CRLF-terminated frame without touching the buffer.
@@ -473,6 +592,7 @@ class MakcuTransport:
 
     def reconnect(self) -> None:
         """Close, cool down, and reopen the port."""
+        self._note_reconnect()
         self.close()
         time.sleep(0.3)
         self.connect()
@@ -490,8 +610,12 @@ class MakcuTransport:
     def fire_and_forget(self, name: str, *args: int | str) -> None:
         """Write without waiting for anything back."""
         if self._ser is None:
-            raise MakcuConnectionError("transport not connected")
+            err = MakcuConnectionError("transport not connected")
+            self._note_error(err)
+            raise err
+        payload = build_cmd(name, *args)
         with self._lock:
             self._ser.reset_output_buffer()
-            self._ser.write(build_cmd(name, *args))
+            self._ser.write(payload)
             self._ser.flush()
+        self._note_tx(payload)

@@ -1,5 +1,8 @@
 """Mouse-only domain types. No I/O here — portable to Rust as-is."""
 
+from __future__ import annotations
+
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
@@ -46,6 +49,63 @@ class Position:
     """Tracked pointer position from km.getpos()."""
     x: int
     y: int
+
+
+@dataclass(frozen=True)
+class Monitor:
+    """One display in virtual-desktop coordinates.
+
+    x/y is the monitor origin (negative when placed left/above primary),
+    w/h its size in physical pixels, scale the DPI factor
+    (physical pixels per logical unit).
+    """
+    x: int
+    y: int
+    w: int
+    h: int
+    scale: float = 1.0
+
+
+@dataclass(frozen=True)
+class Bounds:
+    """Bounding box over monitors: origin + size in logical units."""
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+def virtual_bounds(monitors: Sequence[Monitor]) -> Bounds:
+    """Bounding box spanning all monitors; negative origins supported."""
+    if not monitors:
+        raise ValueError("virtual_bounds needs at least one monitor")
+    left = min(m.x for m in monitors)
+    top = min(m.y for m in monitors)
+    right = max(m.x + m.w / m.scale for m in monitors)
+    bottom = max(m.y + m.h / m.scale for m in monitors)
+    return Bounds(x=left, y=top, w=int(round(right - left)), h=int(round(bottom - top)))
+
+
+def to_virtual(x: int, y: int, monitor: Monitor) -> Position:
+    """Monitor-local physical pixel -> virtual-desktop logical point."""
+    return Position(
+        x=monitor.x + int(round(x / monitor.scale)),
+        y=monitor.y + int(round(y / monitor.scale)),
+    )
+
+
+def to_local(x: int, y: int, monitor: Monitor) -> Position:
+    """Virtual-desktop logical point -> monitor-local physical pixel."""
+    return Position(
+        x=int(round((x - monitor.x) * monitor.scale)),
+        y=int(round((y - monitor.y) * monitor.scale)),
+    )
+
+
+def remap_point(x: int, y: int, src: Monitor, dst: Monitor) -> Position:
+    """Re-express a src-local pixel as a dst-local pixel via virtual space."""
+    v = to_virtual(x, y, src)
+    return to_local(v.x, v.y, dst)
 
 
 class LockTarget(str, Enum):

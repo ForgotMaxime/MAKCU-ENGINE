@@ -13,7 +13,16 @@ from .events import ButtonMonitor
 from .mock import MockTransport
 from .mouse import Mouse
 from .transport import MakcuTransport, list_candidates
-from .types import Button, ButtonOwnership, DeviceInfo, LockTarget, Position, Screen
+from .types import (
+    Bounds,
+    Button,
+    ButtonOwnership,
+    DeviceInfo,
+    LockTarget,
+    Monitor,
+    Position,
+    Screen,
+)
 
 __version__ = "0.5.1"
 
@@ -24,6 +33,7 @@ __all__ = [
     "USB_PID",
     "USB_VID",
     "BatchBuilder",
+    "Bounds",
     "Button",
     "ButtonMonitor",
     "ButtonOwnership",
@@ -35,6 +45,7 @@ __all__ = [
     "MakcuTimeoutError",
     "MakcuTransport",
     "MockTransport",
+    "Monitor",
     "Mouse",
     "Position",
     "Screen",
