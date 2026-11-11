@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased (Python) — 2026-11-11
+## Unreleased
+
+## 0.6.0 (Python) / 0.5.0 (Rust) — 2026-11-11
 
 Quatre branches parallèles, mergées dans `main` après review, résolution
 de conflits et re-validation (`pytest -k "not hardware"`, `ruff`, `mypy --strict`) :
