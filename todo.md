@@ -25,27 +25,20 @@ Légende : `[P0]` critique, `[P1]` utile, `[P2]` idée. Cible de fichier entre p
 - [x] Trancher `interpolation 0x1F` : pas de nom `km.*` texte connu → soit `send_raw` documenté, soit marqué non supporté ASCII (`docs/protocol.md`) — mergé (verdict non supporté, `feat/p1-transport-docs`).
 - [x] Trancher stream `wheel-telemetry 0x20` + snapshots `0x55/0x56` : binaire → a priori non-goals, à documenter explicitement (`docs/protocol.md`) — mergé (verdicts `feat/p1-transport-docs`).
 
-### [P1] 0.8.0 — Robustesse / observabilité — PARTIE MERGÉE 2026-11-11
-- [x] Compteurs `tx_bytes/cmds_sent/reconnects/avg_rtt_ms/last_error` + ring buffer `get_recent_lines()` (`transport.py`, miroir mock) — mergé (fix `n<=0` appliqué au merge).
-- [x] `no_wait()` context manager imbricable (`transport.py`, `set()` → fire-and-forget, queries inchangées) — mergé.
-- [x] Multi-écran : `Monitor`/`Bounds` + `virtual_bounds/to_local/to_virtual/remap_point` (`types.py`) — mergé.
-- [x] Profiler par commande, coût nul quand off (`transport.py`, miroir mock, `enable/disable_profiling/get_profile`) — mergé (`feat/py-remainder`).
-- [x] Exemple relai UDP→série (`examples/udp_relay.py`, subset sûr, `--port` explicite) — mergé.
-- [x] Macros JSON `{version, screenLayout, events}` : `dedupe_moves/scale_coordinates/adjust_delays`, replay en deltas rel, plan par défaut (`examples/macros.py`) — mergé.
-
 ## [P1] 0.7.0 — Humanisation `extras` (mêmes maths Python/Rust) — MERGÉ 2026-11-11
 - [x] `move_bezier(dx, dy, segments, ctrl_x, ctrl_y)` firmware + `check_bezier` (`mouse.py`, `protocol.py`) — mergé.
 - [x] `click_human_like(button, count, profile, jitter)` 5 profils + jitter (`mouse.py`, `CLICK_PROFILES`) — mergé.
 - [x] `drag_abs(start, end, button, duration)` canonique (`mouse.py`, release via `finally`) — mergé.
 - [x] Mapping DPI/sens : `CoordSpace` + `scale_coordinates()` purs (`types.py`, sans état global) — mergé.
-- [ ] Macros JSON `{version, screenLayout, events}` : `dedupe_moves/scale_coordinates/adjust_delays(0.25-4x)`, replay en deltas rel (`examples/` d'abord, core ensuite si usage réel) — helpers + exemple mergés (`feat/py-remainder`) ; reste : intégration core si usage réel.
+- [x] Parité Rust `makcu_core` : `init/press/release/double_click(Duration)`, observers, `CLICK_PROFILES` + `move_bezier/click_human_like` (sampler injecté) `/drag_abs`, `check_bezier`, `CoordSpace/Monitor/Bounds` + géométrie — mergé (`feat/rust-mouse-parity`, 32 tests). Écarts doc : `Duration` vs float, `Vec`/array vs `dict`, arrondi half-away vs banker (±1 sur égalités).
+- [ ] Macros JSON `{version, screenLayout, events}` : `dedupe_moves/scale_coordinates/adjust_delays(0.25-4x)`, replay en deltas rel — helpers + exemple mergés (`feat/py-remainder`) ; reste : intégration core si usage réel.
 
-## [P1] 0.8.0 — Robustesse / observabilité
-- [ ] Compteurs `tx_bytes/cmds_sent/reconnects/avg_rtt_ms/last_error` + ring buffer `get_recent_lines()` + `cmd_id` par move (`transport.py`).
-- [ ] Profiler par commande, coût nul quand off (`protocol.py`, cf. crate `makcu` `profile`, `makcu-cpp PerformanceProfiler`).
-- [ ] `FireAndForget` context manager Python (`ff()` RAII, cf. crate `makcu`) — acceptation : queries wait toujours, setters no-wait dans le bloc.
-- [ ] Multi-écran : `Monitor{x,y,w,h,scale}` → `virtual_bounds` (origine négative OK), `to_local/to_virtual/remap_point` (`types.py` + helpers).
-- [ ] Exemple relai UDP→série `:5005` (`examples/`, cf. `MakcuRelay` MIT) — exemple seul, pas dans le core.
+## [P1] 0.8.0 — Robustesse / observabilité — MERGÉ 2026-11-11
+- [x] Compteurs `tx_bytes/cmds_sent/reconnects/avg_rtt_ms/last_error` + ring buffer `get_recent_lines()` (`transport.py`, miroir mock ; parité Rust : `TransportStats`, ring 200, `reconnect` compté) — mergé.
+- [x] `no_wait()` imbricable Python + `NoWaitGuard` RAII Rust (`set()` → fire-and-forget, queries inchangées) — mergé.
+- [x] Multi-écran : `Monitor`/`Bounds` + `virtual_bounds/to_local/to_virtual/remap_point` (Python + Rust) — mergé.
+- [x] Profiler par commande, coût nul quand off (Python `enable/disable_profiling/get_profile`, miroir mock) — mergé.
+- [x] Exemple relai UDP→série (`examples/udp_relay.py`, subset sûr) + macros JSON (`examples/macros.py`, plan par défaut) — mergés.
 
 ## Release
 - [ ] Tag + publish PyPI (trusted publishing à tester pour de vrai, `twine check` vert).

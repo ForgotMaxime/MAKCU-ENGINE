@@ -9,6 +9,8 @@ debug.log
 *.egg-info/
 build/
 dist/
+.uv/
+uv.lock
 .venv/
 venv/
 rust/target/

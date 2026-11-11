@@ -21,6 +21,20 @@ de conflits et re-validation (`pytest -k "not hardware"`, `ruff`, `mypy --strict
   (close/reopen + compteur), blocs `mouse.py` complémentaires conservés.
   86 tests unitaires verts ; 4 tests HW pré-existants en échec environnemental
   (port série fantôme rejette `km.move`, identique sur `main` propre).
+- `feat/py-remainder` : profiler opt-in (`enable/disable_profiling`,
+  `get_profile` count/total/avg/min/max, coût-nul-quand-off, miroir mock),
+  `examples/udp_relay.py` (UDP `:5005` → série, subset sûr), `examples/macros.py`
+  (helpers `dedupe_moves/scale/adjust_delays`, replay en deltas rel).
+- `feat/rust-mouse-parity` : parité `makcu_core` — `init/press/release`,
+  `double_click(Duration)`, observers, `CLICK_PROFILES` + `move_bezier` /
+  `click_human_like` (sampler `FnMut()->f64` injecté, zéro dép.) / `drag_abs`,
+  `check_bezier`, `CoordSpace`/`Monitor`/`Bounds` + géométrie ; `BatchBuilder::up`
+  breaking-change miroir Python. 32 tests verts.
+- `feat/rust-transport-parity` : parité transport — `TransportStats`,
+  ring `RECENT_CAPACITY=200`, `NoWaitGuard` RAII, callbacks `Arc<dyn Fn>`
+  (panics non rattrapées, documenté), defaults de trait pour compatibilité ;
+  miroir mock (8 tests) + impl `makcu_serial` (port sous `Mutex<Option<>>`,
+  `reconnect` +300 ms). 40 tests verts au total workspace (7 HW ignorés).
 
 ## 0.5.1 (Python) / 0.4.1 (Rust) — 2026-11-05
 
