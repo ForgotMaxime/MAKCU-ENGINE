@@ -132,3 +132,7 @@ Command availability by firmware is tracked upstream, not here:
 Snapshot notes used in this tree: `move_now` V4.097+; `autorelease` /
 `set_autorelease` / `heartbeat` V4.103+ (test builds, `ERR` on older
 firmware); `api_version` V4.105 (reports `1`).
+
+## Validation message convention
+
+User-facing validation raises `MakcuProtocolError("<param> …: <v>")`: the message starts with the offending parameter and ends with `: <value>`.

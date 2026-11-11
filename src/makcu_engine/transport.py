@@ -646,7 +646,7 @@ class MakcuTransport:
         if self._ser is None:
             raise MakcuConnectionError("transport not connected")
         if n <= 0:
-            raise MakcuProtocolError(f"read_exact n={n}")
+            raise MakcuProtocolError(f"n out of range: {n}")
         with self._lock:
             prev = self._ser.timeout
             try:
