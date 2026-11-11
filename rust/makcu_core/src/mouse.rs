@@ -8,13 +8,88 @@ use std::time::Duration;
 use crate::{
     error::MakcuError,
     protocol::{
-        button_method, check_autorelease, check_click, check_mask_bit, check_screen_size,
-        check_stream_mode, check_xy, clamp_i16, mask_method, parse_button_event, parse_device,
-        parse_getpos, parse_screen,
+        button_method, check_autorelease, check_bezier, check_click, check_mask_bit,
+        check_screen_size, check_stream_mode, check_xy, clamp_i16, mask_method, parse_button_event,
+        parse_device, parse_getpos, parse_screen,
     },
     BatchBuilder, Button, ButtonOwnership, DeviceInfo, LockTarget, Position, Result, Screen,
     Transport,
 };
+
+/// Human-like click timing profile in ms: `(down_min, down_max, wait_min, wait_max)`.
+///
+/// Mirrors the Python `CLICK_PROFILES` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClickProfile {
+    /// Minimum button-hold time in ms.
+    pub down_min_ms: u32,
+    /// Maximum button-hold time in ms.
+    pub down_max_ms: u32,
+    /// Minimum inter-click wait in ms.
+    pub wait_min_ms: u32,
+    /// Maximum inter-click wait in ms.
+    pub wait_max_ms: u32,
+}
+
+/// Named human-like click timing profiles in ms.
+///
+/// Mirrors the Python `CLICK_PROFILES` table exactly.
+pub const CLICK_PROFILES: &[(&str, ClickProfile)] = &[
+    (
+        "normal",
+        ClickProfile {
+            down_min_ms: 60,
+            down_max_ms: 120,
+            wait_min_ms: 100,
+            wait_max_ms: 180,
+        },
+    ),
+    (
+        "fast",
+        ClickProfile {
+            down_min_ms: 30,
+            down_max_ms: 60,
+            wait_min_ms: 50,
+            wait_max_ms: 100,
+        },
+    ),
+    (
+        "slow",
+        ClickProfile {
+            down_min_ms: 100,
+            down_max_ms: 180,
+            wait_min_ms: 150,
+            wait_max_ms: 300,
+        },
+    ),
+    (
+        "variable",
+        ClickProfile {
+            down_min_ms: 40,
+            down_max_ms: 200,
+            wait_min_ms: 80,
+            wait_max_ms: 250,
+        },
+    ),
+    (
+        "gaming",
+        ClickProfile {
+            down_min_ms: 20,
+            down_max_ms: 40,
+            wait_min_ms: 30,
+            wait_max_ms: 60,
+        },
+    ),
+];
+
+/// Look up a [`CLICK_PROFILES`] entry by name.
+fn lookup_profile(name: &str) -> Result<ClickProfile> {
+    CLICK_PROFILES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, p)| *p)
+        .ok_or_else(|| MakcuError::InvalidArgument(format!("unknown click profile: {name:?}")))
+}
 
 /// Mouse-only high-level API over any [`Transport`].
 pub struct Mouse<T: Transport> {
@@ -101,6 +176,57 @@ impl<T: Transport> Mouse<T> {
         Ok(self.t.query(&format!("km.lock_{}", t.as_str()), &[])? == "1")
     }
 
+    /// Whether a lock target is currently locked (alias of [`lock_state`](Self::lock_state)).
+    ///
+    /// Stateless single query.
+    pub fn is_locked(&self, t: LockTarget) -> Result<bool> {
+        self.lock_state(t)
+    }
+
+    /// Every lock target keyed by wire name, in [`LockTarget::ALL`] order.
+    ///
+    /// Stateless, one query per target; mirrors Python `get_all_lock_states`.
+    pub fn get_all_lock_states(&self) -> Result<Vec<(&'static str, bool)>> {
+        let mut out = Vec::with_capacity(LockTarget::ALL.len());
+        for t in LockTarget::ALL {
+            out.push((t.as_str(), self.lock_state(t)?));
+        }
+        Ok(out)
+    }
+
+    /// Ownership of every canonical button, in [`Button::ALL`] order.
+    ///
+    /// Stateless, one query per button; mirrors Python `get_button_states`.
+    pub fn get_button_states(&self) -> Result<[(Button, ButtonOwnership); 5]> {
+        let mut out = [(Button::Left, ButtonOwnership::None); 5];
+        for (i, b) in Button::ALL.iter().enumerate() {
+            out[i] = (*b, self.button_state(*b)?);
+        }
+        Ok(out)
+    }
+
+    /// Injected-hold bitmask over canonical buttons (bit `1 << (value-1)`).
+    ///
+    /// A bit is set when that button's ownership is INJECTED or BOTH;
+    /// physical-only holds do not set bits. Stateless, one query per button.
+    pub fn get_button_mask(&self) -> Result<u8> {
+        let mut mask: u8 = 0;
+        for (b, ownership) in self.get_button_states()? {
+            if matches!(ownership, ButtonOwnership::Injected | ButtonOwnership::Both) {
+                mask |= 1 << ((b as u8) - 1);
+            }
+        }
+        Ok(mask)
+    }
+
+    /// Whether injected code currently holds a button. Stateless single query.
+    pub fn is_pressed(&self, b: Button) -> Result<bool> {
+        Ok(matches!(
+            self.button_state(b)?,
+            ButtonOwnership::Injected | ButtonOwnership::Both
+        ))
+    }
+
     fn i16s(dx: i32, dy: i32) -> Result<(String, String)> {
         Ok((clamp_i16(dx)?.to_string(), clamp_i16(dy)?.to_string()))
     }
@@ -181,12 +307,22 @@ impl<T: Transport> Mouse<T> {
         self.t.set(&format!("km.{}", button_method(b)), &["1"])
     }
 
+    /// Press a mouse button (alias of [`down`](Self::down)).
+    pub fn press(&self, b: Button) -> Result<()> {
+        self.down(b)
+    }
+
     /// Release a mouse button; silent variant skips the frame.
     pub fn up(&self, b: Button, silent_release: bool) -> Result<()> {
         self.t.set(
             &format!("km.{}", button_method(b)),
             &[if silent_release { "2" } else { "0" }],
         )
+    }
+
+    /// Release a mouse button (alias of [`up`](Self::up)).
+    pub fn release(&self, b: Button, silent_release: bool) -> Result<()> {
+        self.up(b, silent_release)
     }
 
     /// Scheduled clicks with optional hold time.
@@ -199,6 +335,147 @@ impl<T: Transport> Mouse<T> {
             self.t.set("km.click", &[&ns, &cs, &hs])
         } else {
             self.t.set("km.click", &[&ns, &cs])
+        }
+    }
+
+    /// Two clicks with one sleep between them.
+    ///
+    /// Mirrors Python `double_click(button, gap_s)`; the float-seconds gap
+    /// becomes a [`Duration`] here, so negative gaps are unrepresentable
+    /// (Python rejects `gap_s < 0`).
+    pub fn double_click(&self, b: Button, gap: Duration) -> Result<()> {
+        self.click(b, 1, None)?;
+        if gap > Duration::ZERO {
+            std::thread::sleep(gap);
+        }
+        self.click(b, 1, None)
+    }
+
+    /// Human-like clicks: randomized hold/inter-click sleeps per profile.
+    ///
+    /// The caller supplies `rng`, a uniform `[0, 1)` sampler (e.g. a small
+    /// LCG in tests or `rand::random` behind a feature in your app). The
+    /// core stays zero-dependency, so no RNG lives here — this also keeps
+    /// timing tests deterministic. Jitter draws uniform integers from
+    /// `-jitter..=jitter` per axis, matching Python
+    /// `random.randint(-jitter, jitter)`; hold/wait draws are uniform over
+    /// the profile's millisecond window.
+    ///
+    /// Mirrors Python validation: unknown profile, `count` outside 1..=255,
+    /// or negative `jitter` all fail.
+    pub fn click_human_like<F>(
+        &self,
+        b: Button,
+        count: u32,
+        profile: &str,
+        jitter: i32,
+        rng: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut() -> f64,
+    {
+        let p = lookup_profile(profile)?;
+        if !(1..=255).contains(&count) {
+            return Err(MakcuError::InvalidArgument(format!("count: {count}")));
+        }
+        if jitter < 0 {
+            return Err(MakcuError::InvalidArgument(format!("jitter: {jitter}")));
+        }
+        for i in 0..count {
+            if jitter > 0 {
+                let span = f64::from(jitter) * 2.0 + 1.0;
+                let jx = (rng() * span).floor() as i32 - jitter;
+                let jy = (rng() * span).floor() as i32 - jitter;
+                if jx != 0 || jy != 0 {
+                    self.move_rel(jx, jy)?;
+                }
+            }
+            self.down(b)?;
+            let hold_ms =
+                f64::from(p.down_min_ms) + rng() * f64::from(p.down_max_ms - p.down_min_ms);
+            std::thread::sleep(Duration::from_secs_f64(hold_ms / 1000.0));
+            self.up(b, false)?;
+            if i + 1 < count {
+                let wait_ms =
+                    f64::from(p.wait_min_ms) + rng() * f64::from(p.wait_max_ms - p.wait_min_ms);
+                std::thread::sleep(Duration::from_secs_f64(wait_ms / 1000.0));
+            }
+        }
+        Ok(())
+    }
+
+    /// Firmware-side quadratic curve: `km.move(dx,dy,segments,cx,cy)`.
+    ///
+    /// `ctrl` defaults to `(dx.div_euclid(2), dy.div_euclid(2))`, matching
+    /// Python `dx // 2` floor division (Rust `/` truncates toward zero, so
+    /// `div_euclid` is used deliberately). Ranges mirror Python
+    /// `check_bezier` (segments 1..=255, control i16).
+    pub fn move_bezier(
+        &self,
+        dx: i32,
+        dy: i32,
+        segments: u32,
+        ctrl: Option<(i32, i32)>,
+    ) -> Result<()> {
+        let (cx, cy) = ctrl.unwrap_or((dx.div_euclid(2), dy.div_euclid(2)));
+        check_bezier(segments, cx, cy)?;
+        let (x, y) = Self::i16s(dx, dy)?;
+        let (ss, cxs, cys) = (segments.to_string(), cx.to_string(), cy.to_string());
+        self.t.set("km.move", &[&x, &y, &ss, &cxs, &cys])
+    }
+
+    /// Absolute drag: `moveto(start)`, press, smooth-move, release.
+    ///
+    /// Mirrors Python `drag_abs`: `duration` must be positive (Python
+    /// rejects `duration <= 0`), both endpoints are `check_xy`-validated,
+    /// `segments = max(10, duration * 30)`, with 20 ms settles around the
+    /// press/release. The button is always released, even if the smooth
+    /// move fails (the final settle sleep is then skipped, as in Python).
+    pub fn drag_abs(
+        &self,
+        start: (i32, i32),
+        end: (i32, i32),
+        button: Button,
+        duration: Duration,
+    ) -> Result<()> {
+        if duration == Duration::ZERO {
+            return Err(MakcuError::InvalidArgument(
+                "duration must be positive".into(),
+            ));
+        }
+        check_xy(start.0, start.1)?;
+        check_xy(end.0, end.1)?;
+        let segments = std::cmp::max(10, (duration.as_secs_f64() * 30.0) as u32);
+        self.moveto(start.0, start.1)?;
+        std::thread::sleep(Duration::from_millis(20));
+        self.down(button)?;
+        let r = self.move_smooth(
+            end.0 - start.0,
+            end.1 - start.1,
+            segments,
+            duration / segments,
+        );
+        let up_r = self.up(button, false);
+        r.and(up_r)?;
+        std::thread::sleep(Duration::from_millis(20));
+        Ok(())
+    }
+
+    /// Best-effort release of all buttons; stops the button stream if running.
+    ///
+    /// Never fails: per-button and stream errors are swallowed, mirroring
+    /// Python's `try/except Exception: pass` release loop.
+    pub fn init(&self) {
+        for b in Button::ALL {
+            let _ = self.up(b, false);
+        }
+        if self
+            .stream_mode
+            .lock()
+            .map(|m| m.is_some())
+            .unwrap_or(false)
+        {
+            let _ = self.stop_button_stream();
         }
     }
 
@@ -539,5 +816,138 @@ mod tests {
         );
         assert_eq!(*seen.lock().unwrap(), 1);
         m.stop_button_stream().unwrap();
+    }
+
+    #[test]
+    fn button_states_mask_and_pressed() {
+        let t = MockTransport::new()
+            .with_reply("km.left", "2")
+            .with_reply("km.right", "1")
+            .with_reply("km.middle", "0")
+            .with_reply("km.ms1", "3")
+            .with_reply("km.ms2", "0");
+        let m = Mouse::new(&t);
+        let states = m.get_button_states().unwrap();
+        assert_eq!(states[0], (Button::Left, ButtonOwnership::Injected));
+        assert_eq!(states[3], (Button::Side1, ButtonOwnership::Both));
+        assert_eq!(m.get_button_mask().unwrap(), 0b01001);
+        assert!(m.is_pressed(Button::Left).unwrap());
+        assert!(!m.is_pressed(Button::Right).unwrap());
+        assert!(m.is_pressed(Button::Side1).unwrap());
+    }
+
+    #[test]
+    fn locks_and_aliases() {
+        let t = MockTransport::new().with_reply("km.lock_mx", "1");
+        let m = Mouse::new(&t);
+        assert!(m.lock_state(LockTarget::Mx).unwrap());
+        assert!(m.is_locked(LockTarget::Mx).unwrap());
+        assert!(!m.is_locked(LockTarget::My).unwrap());
+        let all = m.get_all_lock_states().unwrap();
+        assert_eq!(all.len(), 14);
+        assert_eq!(all[5], ("mx", true));
+        assert_eq!(all[6], ("my", false));
+        m.press(Button::Right).unwrap();
+        m.release(Button::Right, true).unwrap();
+        let sent = t.sent();
+        assert!(sent.contains(&"km.right(1)".to_string()));
+        assert!(sent.contains(&"km.right(2)".to_string()));
+    }
+
+    #[test]
+    fn double_click_sends_two_clicks() {
+        use std::time::Duration;
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        m.double_click(Button::Left, Duration::ZERO).unwrap();
+        assert_eq!(t.sent(), vec!["km.click(1,1)", "km.click(1,1)"]);
+    }
+
+    #[test]
+    fn bezier_wire_format_and_validation() {
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        m.move_bezier(100, 50, 20, None).unwrap();
+        assert_eq!(t.sent(), vec!["km.move(100,50,20,50,25)"]);
+        assert!(m.move_bezier(0, 0, 0, None).is_err());
+        assert!(m.move_bezier(0, 0, 256, None).is_err());
+        assert!(m.move_bezier(0, 0, 1, Some((40000, 0))).is_err());
+        let t2 = MockTransport::new();
+        let m2 = Mouse::new(&t2);
+        m2.move_bezier(-3, -5, 1, None).unwrap();
+        // Python // floors: -3//2 == -2, -5//2 == -3.
+        assert_eq!(t2.sent(), vec!["km.move(-3,-5,1,-2,-3)"]);
+    }
+
+    #[test]
+    fn human_like_validates_and_clicks() {
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        let mut zero = || 0.0;
+        assert!(m
+            .click_human_like(Button::Left, 1, "nope", 0, &mut zero)
+            .is_err());
+        assert!(m
+            .click_human_like(Button::Left, 0, "normal", 0, &mut zero)
+            .is_err());
+        assert!(m
+            .click_human_like(Button::Left, 1, "normal", -1, &mut zero)
+            .is_err());
+        m.click_human_like(Button::Left, 1, "fast", 0, &mut zero)
+            .unwrap();
+        assert_eq!(t.sent(), vec!["km.left(1)", "km.left(0)"]);
+    }
+
+    #[test]
+    fn drag_abs_happy_path_and_validation() {
+        use std::time::Duration;
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        m.drag_abs((0, 0), (10, 0), Button::Left, Duration::from_millis(10))
+            .unwrap();
+        let sent = t.sent();
+        assert_eq!(sent[0], "km.moveto(0,0)");
+        assert_eq!(sent[1], "km.left(1)");
+        assert_eq!(sent[sent.len() - 1], "km.left(0)");
+        assert!(m
+            .drag_abs((0, 0), (1, 1), Button::Left, Duration::ZERO)
+            .is_err());
+        assert!(m
+            .drag_abs((40000, 0), (1, 1), Button::Left, Duration::from_millis(10))
+            .is_err());
+    }
+
+    #[test]
+    fn batch_up_silent_release() {
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        let mut b = m.batch();
+        b.down(Button::Middle);
+        b.up(Button::Middle, true);
+        b.up(Button::Middle, false);
+        b.execute().unwrap();
+        assert_eq!(t.sent()[0], "km.middle(1)\rkm.middle(2)\rkm.middle(0)\r");
+    }
+
+    #[test]
+    fn init_releases_and_stops_stream() {
+        use std::time::Duration;
+        let t = MockTransport::new();
+        let m = Mouse::new(&t);
+        m.start_button_stream(1).unwrap();
+        m.init();
+        let sent = t.sent();
+        for cmd in [
+            "km.left(0)",
+            "km.right(0)",
+            "km.middle(0)",
+            "km.ms1(0)",
+            "km.ms2(0)",
+        ] {
+            assert!(sent.contains(&cmd.to_string()), "{sent:?}");
+        }
+        assert!(sent.contains(&"km.buttons(0)".to_string()));
+        // Stream mode cleared: polling now errors.
+        assert!(m.poll_button_event(Duration::from_millis(10)).is_err());
     }
 }

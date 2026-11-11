@@ -96,10 +96,11 @@ impl<'a, T: Transport> BatchBuilder<'a, T> {
         self.add_raw(&cmd, &raw)
     }
 
-    /// Queue a button release.
-    pub fn up(&mut self, b: Button) -> &mut Self {
+    /// Queue a button release; silent variant wires a 2 like `Mouse::up`.
+    pub fn up(&mut self, b: Button, silent_release: bool) -> &mut Self {
         let cmd = format!("km.{}", button_method(b));
-        let raw = build_cmd(&cmd, &["0"]);
+        let v = if silent_release { "2" } else { "0" };
+        let raw = build_cmd(&cmd, &[v]);
         self.add_raw(&cmd, &raw)
     }
 

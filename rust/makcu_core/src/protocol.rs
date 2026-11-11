@@ -146,6 +146,20 @@ pub fn check_click(button: u32, count: u32, hold_ms: Option<u32>) -> Result<()> 
     Ok(())
 }
 
+/// Validate firmware-side bezier args: segments 1..=255, control i16.
+pub fn check_bezier(segments: u32, ctrl_x: i32, ctrl_y: i32) -> Result<()> {
+    if !(1..=255).contains(&segments) {
+        return Err(MakcuError::InvalidArgument(format!("segments: {segments}")));
+    }
+    if !(-32768..=32767).contains(&ctrl_x) {
+        return Err(MakcuError::InvalidArgument(format!("ctrl_x: {ctrl_x}")));
+    }
+    if !(-32768..=32767).contains(&ctrl_y) {
+        return Err(MakcuError::InvalidArgument(format!("ctrl_y: {ctrl_y}")));
+    }
+    Ok(())
+}
+
 /// Validate a button-stream mode (1..=3).
 pub fn check_stream_mode(mode: u8) -> Result<()> {
     if !(1..=3).contains(&mode) {
@@ -295,6 +309,16 @@ mod tests {
     fn clamp() {
         assert!(clamp_i16(40000).is_err());
         assert_eq!(clamp_i16(-32768).unwrap(), -32768);
+    }
+
+    #[test]
+    fn bezier() {
+        check_bezier(1, 0, 0).unwrap();
+        check_bezier(255, -32768, 32767).unwrap();
+        assert!(check_bezier(0, 0, 0).is_err());
+        assert!(check_bezier(256, 0, 0).is_err());
+        assert!(check_bezier(1, 32768, 0).is_err());
+        assert!(check_bezier(1, 0, -32769).is_err());
     }
 
     #[test]

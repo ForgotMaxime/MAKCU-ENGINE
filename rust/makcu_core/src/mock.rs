@@ -81,11 +81,16 @@ impl Transport for MockTransport {
             "km.echo" => "0",
             "km.moving" => "0",
             "km.left" => "0",
+            "km.right" => "0",
+            "km.middle" => "0",
+            "km.ms1" => "0",
+            "km.ms2" => "0",
             "km.buttons" => "0",
             "km.autorelease" => "0",
             "km.api_version" => "1",
             "km.getpos" => "km.getpos(100,200)",
             "km.screen" => "km.screen(1920,1080)",
+            _ if base.starts_with("km.lock_") => "0",
             _ => "",
         };
         Ok(d.to_string())
