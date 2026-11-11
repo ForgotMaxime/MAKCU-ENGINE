@@ -44,7 +44,7 @@ Légende : `[P0]` critique, `[P1]` utile, `[P2]` idée. Cible de fichier entre p
 Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis V4.107, pas de course parité. Ordre suggéré : bump release → P0 → P1 → P2.
 
 ### P0 — correctness / bloque la release
-- [ ] README drift : réécrire listes API `Mouse` (`init/press/release/double_click`, observers, bezier/human/drag, `CLICK_PROFILES`) et `Transport` (callbacks, stats/ring, `no_wait`, profiler, `fire_and_forget`), layout (`test_{lifecycle,observe,humanize,transport_obs,remainder}.py`, `examples/{udp_relay,macros}.py`), features (humanisation, observabilité, géométrie), nombres (Python 95+8 HW, Rust 40), table de portage (`Duration`, `Vec`/array, arrondi half-away vs banker, `NoWaitGuard`, `TransportStats`, `BatchBuilder::move`→`move_rel`, `connect` idempotent, `wait_idle` poll, `Mock::is_connected` champ vs méthode). Acceptation : chaque `def` public cité ou marqué interne.
+- [x] README drift : listes API `Mouse`/`Transport`, layout, features, nombres, table de portage — mergé (`feat/docs-refresh`). Suivi : retoucher la ligne "profiler-absent-in-Rust" après le merge du profiler Rust.
 - [ ] `button_stream_state()` faux pour modes 2/3 (`mouse.py:332`, `== "1"`) : `!= "0"` ou `self._stream_mode`. Test mock `km.buttons:2/3`.
 - [ ] `BatchBuilder` : `set_echo` ? / verdict `set_screen` (`confirm=True` sans équivalent batch) / `move_bezier` (trame 5-arg batchable) / alias `press/release` — implémenter à validation identique ou resserrer docstring `batch.py:7` + verdict.
 - [ ] Dérive signatures mock/réel : kwargs `retries`/`error_window_s` acceptés partout, combler `abc.Transport` (`connect/close/reconnect/ensure_connected/callbacks/stats/no_wait`), `_note_tx` mock avec fallback `repr` (binaire). Test mypy sur les deux transports + `send_raw` binaire.
@@ -63,7 +63,7 @@ Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis
 - [ ] Convention messages d'erreur unifiée (`MakcuProtocolError("<param>…")`) + note `protocol.md` + tests de préfixes, les deux langages (`check_*` style drift Rust inclus).
 - [ ] `click_human_like(rng=None)` injectable, défaut global (parité sampler Rust) ; tests existants inchangés.
 - [ ] Petits manques : alias `scroll`, `udp_relay` 5 boutons, recettes `set_lock`/exemple doc, doc `is_locked` vs `is_pressed`, alias `enable_button_monitoring` — implémenter + test ou rejeter explicitement.
-- [ ] `docs/protocol.md` : sous-sections `no_wait`, stats/ring/profiler, trame bezier 5-arg, `press/release/double_click/init`, coûts (5/14 queries), règle mode-3/loop + liens `makcu.com/mcp` et `/api/versions` comme source "depuis quel firmware".
+- [x] `docs/protocol.md` : sous-sections `no_wait`, stats/ring/profiler, trame bezier 5-arg, `press/release/double_click/init`, coûts (5/14 queries), règle mode-3/loop + liens `makcu.com/mcp` et `/api/versions` — mergé (`feat/docs-refresh`).
 - [ ] Knobs transport Rust : `ensure_connected` au minimum, `retries`/`error_window`/`candidates` portés ou documentés-intentionnels.
 - [ ] `wait_idle` Rust : param `poll` + wrapper `wait_idle(timeout)` ; test du poll custom.
 - [ ] Exemples Rust : `batch` + stream + stats sans click/scroll (ex. `batch_monitor.rs` HW-gated).
