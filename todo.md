@@ -77,7 +77,7 @@ Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis
 - [ ] `button_up_force` : vérifier `up(silent_release)` couvre le stuck, sinon ajouter — S.
 
 ### P2 — hygiène / dette
-- [ ] `ruff format --check` en CI ou décision "non enforced" (10 fichiers dérivent ; asymétrie avec `cargo fmt` enforced).
+- [x] `ruff format --check` en CI — appliqué : gate ajoutée (`ci.yml`), 9 fichiers reformatés (`104f4d0`). Dérive future bloquée comme `cargo fmt`.
 - [ ] `mypy tests examples` ou typer `parse_datagram`/`apply_action` (union `Action`) — `udp_relay` force des `type: ignore`.
 - [x] `macros.py` edges : `to_rel_deltas([])` → `ValueError`, validation coords au load, `scale_xy` rename, type `Event` — mergé (+ tests).
 - [x] `__init__.py` : `CLICK_PROFILES`, `CoordSpace` exportés — mergé (test de surface : à ajouter, voir P2 `mypy`/packaging si besoin).
@@ -85,7 +85,7 @@ Firmware officiel toujours V4.108 : aucune nouvelle commande souris ASCII depuis
 - [x] `move_now` V4.097+ dans `protocol.md` — mergé (`feat/docs-refresh`) ; re-mesure timings avec § Hardware.
 
 ## Release — séquence exacte (audit 2026-11-11, `release.yml` tag `v*`)
-- [ ] Bump (re-push `0.5.1`/`0.4.1` serait rejeté doublon) : `pyproject.toml` → `0.6.0`, `__init__.__version__` → `0.6.0`, `rust/Cargo.toml` workspace → `0.5.0` + pin `workspace.dependencies makcu_core` (`0.4.0` stale) → `0.5.0`, retitler CHANGELOG Unreleased → `## 0.6.0 (Python) / 0.5.0 (Rust) — <date>`.
+- [x] Bump fait (`151bd62`, sans tag) : `0.6.0` / `0.5.0`, pin `makcu_core` corrigé, CHANGELOG retitré + section Unreleased rouverte. Reste : tag `v0.6.0` + push (déclenche la publish — confirmation requise).
 - [ ] Valider en local : `pytest -k "not hardware"`, `ruff check src tests examples`, `mypy src`, `cargo test --workspace`, `clippy -D warnings`, `fmt --check`, `python -m build` + `twine check dist/*`, `cargo publish -p makcu_core --dry-run` (serial échoue en dry-run local par design — attend l'index).
 - [ ] Commit bump, `git tag v0.6.0` (un seul tag, convention version Python), `git push origin main v0.6.0` → workflow `release` : PyPI trusted-publish + core→wait-loop→serial.
 - [ ] Vérifier post-release : `pip index versions makcu-engine`, `cargo search makcu_core`, page crates.io, notes GitHub depuis CHANGELOG. Hygiène : Security tab, `pubtime`, bannières.
