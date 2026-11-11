@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import threading
+from collections.abc import Callable
+
 from .errors import MakcuProtocolError, MakcuTimeoutError
+
+logger = logging.getLogger(__name__)
 
 
 class MockTransport:
@@ -13,6 +19,9 @@ class MockTransport:
         self._stream = bytearray()
         self.fail_next_send = False
         self._loop_active = False
+        self._connected = False
+        self._conn_cbs: list[Callable[[bool], None]] = []
+        self._conn_cbs_lock = threading.Lock()
 
     def push_stream_frame(self, frame: bytes) -> None:
         """Enqueue a raw stream frame for read_line / poll_event."""
@@ -27,7 +36,7 @@ class MockTransport:
                 return self.replies[key]
         if base.startswith("km.lock_"):
             return "0"
-        if base.split(".")[-1] in ("left", "right", "middle", "side1", "side2"):
+        if base.split(".")[-1] in ("left", "right", "middle", "side1", "side2", "ms1", "ms2"):
             return "0"
         return {
             "km.version": "km.MAKCU",
@@ -98,3 +107,55 @@ class MockTransport:
     def poll_event(self, timeout_s: float = 0.5) -> bytes:
         """Pop the next queued stream frame."""
         return self.read_line(timeout_s)
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether the mock port is currently open."""
+        return self._connected
+
+    def on_connection_change(self, cb: Callable[[bool], None]) -> Callable[[bool], None]:
+        """Register a callback run with True on connect, False on disconnect.
+
+        Same snapshot-then-dispatch semantics as MakcuTransport: callbacks
+        run synchronously on the connecting/closing thread from a snapshot,
+        so registration during dispatch is safe, and a raising callback is
+        logged and skipped without breaking the connect/close call.
+        """
+        with self._conn_cbs_lock:
+            self._conn_cbs.append(cb)
+        return cb
+
+    def remove_connection_callback(self, cb: Callable[[bool], None]) -> None:
+        """Unregister a connection callback. Missing entries are ignored."""
+        with self._conn_cbs_lock:
+            try:
+                self._conn_cbs.remove(cb)
+            except ValueError:
+                pass
+
+    def _notify_connection(self, connected: bool) -> None:
+        """Dispatch a connection event to a snapshot of callbacks."""
+        with self._conn_cbs_lock:
+            cbs = list(self._conn_cbs)
+        for cb in cbs:
+            try:
+                cb(connected)
+            except Exception:
+                logger.exception("connection callback failed")
+
+    def connect(self) -> None:
+        """Mark the mock port open and notify callbacks with True."""
+        self._connected = True
+        self._notify_connection(True)
+
+    def close(self) -> None:
+        """Mark the mock port closed, notifying with False on transition."""
+        was_connected = self._connected
+        self._connected = False
+        if was_connected:
+            self._notify_connection(False)
+
+    def reconnect(self) -> None:
+        """Close then reopen the mock port (emits False then True)."""
+        self.close()
+        self.connect()

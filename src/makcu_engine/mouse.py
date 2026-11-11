@@ -73,9 +73,38 @@ class Mouse:
         """Physical/injected ownership of a button."""
         return ButtonOwnership(int(self._t.query(f"km.{button_method(button)}")))
 
+    def get_button_states(self) -> dict[Button, ButtonOwnership]:
+        """Ownership of every canonical button. Stateless, one query per button."""
+        buttons = (Button.LEFT, Button.RIGHT, Button.MIDDLE, Button.SIDE1, Button.SIDE2)
+        return {b: self.button_state(b) for b in buttons}
+
+    def get_button_mask(self) -> int:
+        """Injected-hold bitmask over canonical buttons (bit ``1 << (value-1)``).
+
+        A bit is set when that button's ownership is INJECTED or BOTH;
+        physical-only holds do not set bits. Stateless, one query per button.
+        """
+        mask = 0
+        for button, ownership in self.get_button_states().items():
+            if ownership in (ButtonOwnership.INJECTED, ButtonOwnership.BOTH):
+                mask |= 1 << (int(button.value) - 1)
+        return mask
+
+    def is_pressed(self, button: Button) -> bool:
+        """Whether injected code currently holds a button. Stateless single query."""
+        return self.button_state(button) in (ButtonOwnership.INJECTED, ButtonOwnership.BOTH)
+
     def lock_state(self, target: LockTarget) -> bool:
         """Whether a lock target is currently locked."""
         return self._t.query(f"km.lock_{target.value}") == "1"
+
+    def is_locked(self, target: LockTarget) -> bool:
+        """Whether a lock target is currently locked. Stateless single query."""
+        return self.lock_state(target)
+
+    def get_all_lock_states(self) -> dict[str, bool]:
+        """Every lock target keyed by wire name. Stateless, one query per target."""
+        return {t.value: self.lock_state(t) for t in LockTarget}
 
     def move(self, dx: int, dy: int) -> None:
         """Injected relative move (i16 each axis)."""

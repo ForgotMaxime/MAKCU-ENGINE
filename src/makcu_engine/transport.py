@@ -17,6 +17,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 
 import serial
 import serial.tools.list_ports
@@ -142,6 +143,8 @@ class MakcuTransport:
         self._req = threading.Lock()
         self._ser: serial.Serial | None = None
         self._loop: _EventLoop | None = None
+        self._conn_cbs: list[Callable[[bool], None]] = []
+        self._conn_cbs_lock = threading.Lock()
 
     @property
     def port(self) -> str:
@@ -157,6 +160,40 @@ class MakcuTransport:
     def is_connected(self) -> bool:
         """Whether the serial port is currently open."""
         return self._ser is not None
+
+    def on_connection_change(self, cb: Callable[[bool], None]) -> Callable[[bool], None]:
+        """Register a callback run with True on connect, False on disconnect.
+
+        Callbacks run synchronously on the thread calling connect/close/
+        reconnect, from a snapshot taken under a lock, so a callback may
+        register or unregister callbacks without deadlock. A raising
+        callback is logged and skipped; remaining callbacks still run.
+        Thread-safety limits: connection management itself is not
+        serialized — concurrent connect/close from multiple threads may
+        interleave notifications, and callbacks must be fast, non-blocking,
+        and must not call connect/close/reconnect reentrantly.
+        """
+        with self._conn_cbs_lock:
+            self._conn_cbs.append(cb)
+        return cb
+
+    def remove_connection_callback(self, cb: Callable[[bool], None]) -> None:
+        """Unregister a connection callback. Missing entries are ignored."""
+        with self._conn_cbs_lock:
+            try:
+                self._conn_cbs.remove(cb)
+            except ValueError:
+                pass
+
+    def _notify_connection(self, connected: bool) -> None:
+        """Dispatch a connection event to a snapshot of callbacks."""
+        with self._conn_cbs_lock:
+            cbs = list(self._conn_cbs)
+        for cb in cbs:
+            try:
+                cb(connected)
+            except Exception:
+                logger.exception("connection callback failed")
 
     def connect(self, retries: int = 10) -> None:
         """Open the port exclusively (8N1, no flow control) with backoff retry."""
@@ -178,6 +215,7 @@ class MakcuTransport:
                 )
                 self._ser.reset_input_buffer()
                 self._ser.reset_output_buffer()
+                self._notify_connection(True)
                 return
             except serial.SerialException as e:
                 last = e
@@ -185,13 +223,21 @@ class MakcuTransport:
         raise MakcuConnectionError(f"cannot open {self._port}@{self._baudrate}: {last}") from last
 
     def close(self) -> None:
-        """Stop the event loop if running, then close the port."""
+        """Stop the event loop if running, then close the port.
+
+        Emits False to connection callbacks only on a connected to
+        disconnected transition; a redundant close is silent. reconnect()
+        therefore emits False then True.
+        """
         self.stop_event_loop()
+        was_connected = self._ser is not None
         if self._ser is not None:
             try:
                 self._ser.close()
             finally:
                 self._ser = None
+        if was_connected:
+            self._notify_connection(False)
 
     def __enter__(self) -> MakcuTransport:  # noqa: PYI034
         if self._ser is None:
