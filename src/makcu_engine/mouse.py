@@ -136,9 +136,17 @@ class Mouse:
         """Press a mouse button."""
         self._t.set(f"km.{button_method(button)}", 1)
 
+    def press(self, button: Button) -> None:
+        """Press a mouse button (alias of down)."""
+        self.down(button)
+
     def up(self, button: Button, silent_release: bool = False) -> None:
         """Release a mouse button; silent variant skips the frame."""
         self._t.set(f"km.{button_method(button)}", 2 if silent_release else 0)
+
+    def release(self, button: Button, silent_release: bool = False) -> None:
+        """Release a mouse button (alias of up)."""
+        self.up(button, silent_release)
 
     def click(self, button: Button, count: int = 1, hold_ms: int | None = None) -> None:
         """Scheduled clicks with optional hold time."""
@@ -147,6 +155,28 @@ class Mouse:
             self._t.set("km.click", button.value, count)
         else:
             self._t.set("km.click", button.value, count, hold_ms)
+
+    def double_click(self, button: Button, gap_s: float = 0.05) -> None:
+        """Two clicks with one sleep between them."""
+        if gap_s < 0:
+            raise MakcuProtocolError(f"gap_s out of range: {gap_s}")
+        self.click(button)
+        if gap_s:
+            time.sleep(gap_s)
+        self.click(button)
+
+    def init(self) -> None:
+        """Best-effort release of all buttons; stop the button stream if running."""
+        for button in (Button.LEFT, Button.RIGHT, Button.MIDDLE, Button.SIDE1, Button.SIDE2):
+            try:
+                self.up(button)
+            except Exception:  # noqa: BLE001 — best-effort release never raises
+                pass
+        if self._stream_mode is not None:
+            try:
+                self.stop_button_stream()
+            except Exception:  # noqa: BLE001 — best-effort release never raises
+                pass
 
     def set_move_mask(self, left: int, right: int, down: int, up: int) -> None:
         """Block physical movement per direction (each 0/1)."""
