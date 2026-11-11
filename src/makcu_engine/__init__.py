@@ -11,12 +11,13 @@ from .errors import (
 )
 from .events import ButtonMonitor
 from .mock import MockTransport
-from .mouse import Mouse
+from .mouse import CLICK_PROFILES, Mouse
 from .transport import MakcuTransport, list_candidates
 from .types import (
     Bounds,
     Button,
     ButtonOwnership,
+    CoordSpace,
     DeviceInfo,
     LockTarget,
     Monitor,
@@ -37,6 +38,8 @@ __all__ = [
     "Button",
     "ButtonMonitor",
     "ButtonOwnership",
+    "CLICK_PROFILES",
+    "CoordSpace",
     "DeviceInfo",
     "LockTarget",
     "MakcuConnectionError",

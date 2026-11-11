@@ -9,7 +9,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterator
 
-from .errors import MakcuProtocolError, MakcuTimeoutError
+from .errors import MakcuConnectionError, MakcuProtocolError, MakcuTimeoutError
 from .protocol import build_cmd
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,10 @@ class MockTransport:
         with self._obs:
             self._tx_bytes += len(payload)
             self._cmds_sent += 1
-            self._recent.append(f"TX {payload.decode('ascii')}")
+            try:
+                self._recent.append(f"TX {payload.decode('ascii')}")
+            except UnicodeDecodeError:
+                self._recent.append(f"TX {payload!r}")
 
     def _note_rx(self, reply: str) -> None:
         """Append one canned reply to the ring buffer."""
@@ -184,8 +187,8 @@ class MockTransport:
             "km.screen": "km.screen(1920,1080)",
         }.get(base, "")
 
-    def query(self, name: str, *args: int | str) -> str:
-        """Canned reply lookup; records the command."""
+    def query(self, name: str, *args: int | str, retries: int = 1) -> str:
+        """Canned reply lookup; records the command (retries ignored)."""
         prof_on = self._profile is not None
         t_prof = time.perf_counter() if prof_on else 0.0
         try:
@@ -201,7 +204,7 @@ class MockTransport:
             if prof_on:
                 self._record_profile(name, time.perf_counter() - t_prof)
 
-    def set(self, name: str, *args: int | str) -> None:
+    def set(self, name: str, *args: int | str, error_window_s: float = 0.08) -> None:
         """Record a setter; honors the fail-next flag (skipped inside no_wait)."""
         if self._no_wait_active():
             self.fire_and_forget(name, *args)
@@ -226,7 +229,7 @@ class MockTransport:
         self._note_tx(build_cmd(name, *args))
         self.sent.append(f"{name}({','.join(str(a) for a in args)})")
 
-    def send_raw(self, data: bytes) -> None:
+    def send_raw(self, data: bytes, error_window_s: float = 0.08) -> None:
         """Record raw bytes; honors the fail-next flag."""
         if self.fail_next_send:
             self.fail_next_send = False
@@ -235,7 +238,10 @@ class MockTransport:
                 self._last_error = str(err)
             raise err
         self._note_tx(data)
-        self.sent.append(data.decode("ascii"))
+        try:
+            self.sent.append(data.decode("ascii"))
+        except UnicodeDecodeError:
+            self.sent.append(repr(data))
 
     def read_line(self, timeout_s: float = 0.5) -> bytes:
         """Pop one CRLF-terminated frame from the queued stream bytes."""
@@ -307,8 +313,9 @@ class MockTransport:
             except Exception:
                 logger.exception("connection callback failed")
 
-    def connect(self) -> None:
+    def connect(self, retries: int = 10) -> None:
         """Mark the mock port open and notify callbacks with True."""
+        del retries
         self._connected = True
         self._notify_connection(True)
 
@@ -325,3 +332,13 @@ class MockTransport:
             self._reconnects += 1
         self.close()
         self.connect()
+
+    def ensure_connected(self) -> None:
+        """Ping and reconnect once if the link is down (mock: no-op ping)."""
+        try:
+            self.query("km.echo")
+            return
+        except MakcuConnectionError:
+            pass
+        self.reconnect()
+        self.query("km.echo")

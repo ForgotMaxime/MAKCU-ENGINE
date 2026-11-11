@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
+from .errors import MakcuProtocolError
+
 
 class Button(IntEnum):
     """Physical mouse buttons (1-5, as used by km.click)."""
@@ -78,7 +80,10 @@ class Bounds:
 def virtual_bounds(monitors: Sequence[Monitor]) -> Bounds:
     """Bounding box spanning all monitors; negative origins supported."""
     if not monitors:
-        raise ValueError("virtual_bounds needs at least one monitor")
+        raise MakcuProtocolError(f"monitors needs at least one: {list(monitors)!r}")
+    for m in monitors:
+        if m.scale <= 0:
+            raise MakcuProtocolError(f"scale out of range: {m.scale}")
     left = min(m.x for m in monitors)
     top = min(m.y for m in monitors)
     right = max(m.x + m.w / m.scale for m in monitors)
@@ -88,6 +93,8 @@ def virtual_bounds(monitors: Sequence[Monitor]) -> Bounds:
 
 def to_virtual(x: int, y: int, monitor: Monitor) -> Position:
     """Monitor-local physical pixel -> virtual-desktop logical point."""
+    if monitor.scale <= 0:
+        raise MakcuProtocolError(f"scale out of range: {monitor.scale}")
     return Position(
         x=monitor.x + int(round(x / monitor.scale)),
         y=monitor.y + int(round(y / monitor.scale)),
@@ -141,10 +148,10 @@ def scale_coordinates(
     Pure helper; all factors must be > 0.
     """
     if game_dpi <= 0:
-        raise ValueError(f"game_dpi out of range: {game_dpi}")
+        raise MakcuProtocolError(f"game_dpi out of range: {game_dpi}")
     if desktop_dpi <= 0:
-        raise ValueError(f"desktop_dpi out of range: {desktop_dpi}")
+        raise MakcuProtocolError(f"desktop_dpi out of range: {desktop_dpi}")
     if sens <= 0:
-        raise ValueError(f"sens out of range: {sens}")
+        raise MakcuProtocolError(f"sens out of range: {sens}")
     factor = game_dpi / desktop_dpi * sens
     return round(x * factor), round(y * factor)
