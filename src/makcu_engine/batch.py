@@ -68,9 +68,9 @@ class BatchBuilder:
         """Queue a button press."""
         return self._add(f"km.{button_method(button)}", 1)
 
-    def up(self, button: Button) -> BatchBuilder:
-        """Queue a button release."""
-        return self._add(f"km.{button_method(button)}", 0)
+    def up(self, button: Button, silent_release: bool = False) -> BatchBuilder:
+        """Queue a button release; silent variant wires a 2 like Mouse.up."""
+        return self._add(f"km.{button_method(button)}", 2 if silent_release else 0)
 
     def click(self, button: Button, count: int = 1, hold_ms: int | None = None) -> BatchBuilder:
         """Queue a scheduled click; validated like Mouse.click."""
